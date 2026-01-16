@@ -241,6 +241,29 @@ export class ProjectsService {
     return true;
   }
 
+  /**
+   * Rechaza una solicitud de edición (solo el owner puede rechazar)
+   */
+  async rejectEditRequest(
+    ownerId: string,
+    projectId: string,
+    targetUserId: string,
+  ): Promise<boolean> {
+    const proj = await this.prisma.project.findUnique({
+      where: { id: projectId },
+      select: { id: true, ownerId: true },
+    });
+    if (!proj) throw new NotFoundException('Proyecto no encontrado');
+    if (proj.ownerId !== ownerId) throw new ForbiddenException('No autorizado');
+
+    await this.prisma.editRequest.updateMany({
+      where: { projectId, requesterId: targetUserId, status: 'PENDING' },
+      data: { status: 'REJECTED' },
+    });
+
+    return true;
+  }
+
   /* =========================================================
    * Eliminar proyecto (solo OWNER)
    * Se elimina en cascada gracias a las reglas de Prisma

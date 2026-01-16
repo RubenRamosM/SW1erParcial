@@ -60,15 +60,26 @@ export interface AiResponse {
 
 @Injectable()
 export class AiService {
-  private groq: Groq;
+  private groq: Groq | null = null;
+  private readonly isAiEnabled: boolean;
 
   constructor() {
     const apiKey = process.env.GROQ_API_KEY;
-    if (!apiKey) {
+    this.isAiEnabled = !!apiKey;
+
+    if (apiKey) {
+      this.groq = new Groq({ apiKey });
+    } else {
+      console.warn('[AiService] GROQ_API_KEY no configurada - Las funciones de IA usarán respuestas fallback');
     }
-    this.groq = new Groq({
-      apiKey: apiKey || 'gsk_dev_placeholder', // evita hardcodear un key “real”
-    });
+  }
+
+  private ensureAiEnabled(): void {
+    if (!this.groq) {
+      throw new InternalServerErrorException(
+        'El servicio de IA no está disponible. Configure GROQ_API_KEY en el archivo .env'
+      );
+    }
   }
 
   async suggestCardinality(
@@ -114,6 +125,11 @@ Ejemplos de análisis:
 - Producto -> Categoria: Asociación (assoc) con cardinalidad muchos-a-uno
 - Empleado -> Persona: Herencia (inherit) porque empleado es un tipo de persona
 - Controlador -> Servicio: Dependencia (dep) porque el controlador usa el servicio`;
+
+    // Si no hay IA configurada, usar fallback
+    if (!this.groq) {
+      return this.getCardinalityFallback(sourceClass, targetClass);
+    }
 
     try {
       const completion = await this.groq.chat.completions.create({
@@ -273,6 +289,8 @@ Ejemplos de análisis:
   }
 
   async analyzeUmlFromImage(imageBuffer: Buffer): Promise<AiResponse> {
+    let worker: Awaited<ReturnType<typeof createWorker>> | null = null;
+
     try {
       // 1. Convertir imagen y redimensionar para mejor OCR
       const processedBuffer = await sharp(imageBuffer)
@@ -280,7 +298,7 @@ Ejemplos de análisis:
         .jpeg({ quality: 90 })
         .toBuffer();
 
-      const worker = await createWorker('eng', 1, {
+      worker = await createWorker('eng', 1, {
         logger: (m) => {
           if (m.status === 'recognizing text') {
             console.log(`OCR Progress: ${Math.round(m.progress * 100)}%`);
@@ -291,19 +309,22 @@ Ejemplos de análisis:
       await worker.setParameters({
         tessedit_char_whitelist:
           'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789(){}[]:;,.-+*_=<>!@#$%^&|\\/"\'`~? \n\t',
-        tessedit_pageseg_mode: 6 as any, // ✅ Cast como any para evitar el error de tipo
+        tessedit_pageseg_mode: 6 as any,
       });
 
       const {
         data: { text: extractedText },
       } = await worker.recognize(processedBuffer);
 
-      await worker.terminate();
-
       console.log('[AI] Extracted text from image:', extractedText);
 
       if (!extractedText || extractedText.trim().length < 10) {
         return this.getImageAnalysisFallback();
+      }
+
+      // Si no hay IA configurada, usar fallback con el texto extraído
+      if (!this.groq) {
+        return this.getImageAnalysisFallbackWithText(extractedText);
       }
 
       // 3. Procesar el texto extraído con Groq para identificar clases UML
@@ -383,6 +404,11 @@ RESPONDE SIEMPRE en formato JSON válido:
     } catch (err) {
       console.error('[AiService] Error analyzing image:', err);
       return this.getImageAnalysisFallback();
+    } finally {
+      // Asegurar que el worker siempre se termine para evitar memory leaks
+      if (worker) {
+        await worker.terminate().catch(() => {});
+      }
     }
   }
 
@@ -548,6 +574,11 @@ Responde SIEMPRE en formato JSON con esta estructura exacta:
 }
 Tipos de relaciones válidos: ONE_TO_ONE, ONE_TO_MANY, MANY_TO_ONE, MANY_TO_MANY, ASSOCIATION, INHERITANCE, COMPOSITION, AGGREGATION.
 Si no hay sugerencias claras, responde solo con "content".`;
+
+    // Si no hay IA configurada, usar fallback
+    if (!this.groq) {
+      return this.getFallbackResponse(userInput);
+    }
 
     try {
       const completion = await this.groq.chat.completions.create({

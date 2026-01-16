@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
+import { getAuthToken, applyAxiosAuthHeader } from "../lib/auth";
 import { useAuth } from "../state/AuthContext";
 import { io, Socket } from "socket.io-client";
 
@@ -22,33 +23,6 @@ type EditRequestNotif = {
   message?: string | null;
   requesterName?: string | null;
 };
-
-/* ===================== Helpers ===================== */
-/** Obtiene token desde varias claves comunes (para sobrevivir reload/F5) */
-function getAuthToken(fallback?: string | null): string | null {
-  const keys = [
-    "token",
-    "auth.token",
-    "accessToken",
-    "auth.accessToken",
-    "jwt",
-    "auth.jwt",
-  ];
-  for (const k of keys) {
-    const v = localStorage.getItem(k);
-    if (v) return v;
-  }
-  return fallback ?? null;
-}
-
-/** Inyecta Authorization global en axios cuando haya token */
-function applyAxiosAuthHeader(token: string | null) {
-  if (token) {
-    api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
-  } else {
-    delete api.defaults.headers.common["Authorization"];
-  }
-}
 
 /* ===================== UI Icons ===================== */
 function IconPlus(props: React.SVGProps<SVGSVGElement>) {

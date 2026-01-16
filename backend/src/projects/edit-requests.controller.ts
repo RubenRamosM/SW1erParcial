@@ -7,12 +7,19 @@ import {
   Req,
   UseGuards,
   NotFoundException,
+  Logger,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt.guard';
 import { ProjectsService } from './projects.service';
 import { PrismaService } from '../common/prisma.service';
 import { DiagramGateway } from '../diagram-realtime/diagram.gateway';
 import { RequestEditDto } from './dto/request-edit.dto';
+import { IsString } from 'class-validator';
+
+class RejectEditDto {
+  @IsString()
+  targetUserId!: string;
+}
 
 @UseGuards(JwtAuthGuard)
 @Controller('projects/:projectId')
@@ -57,5 +64,30 @@ export class EditRequestsController {
     });
 
     return result; // { ok: true, request, skipped? }
+  }
+
+  // POST /api/projects/:projectId/reject-edit
+  @Post('reject-edit')
+  async rejectEdit(
+    @Req() req: any,
+    @Param('projectId') projectId: string,
+    @Body() dto: RejectEditDto,
+  ) {
+    const ownerId: string = req.user.id;
+
+    const result = await this.projects.rejectEditRequest(
+      ownerId,
+      projectId,
+      dto.targetUserId,
+    );
+
+    // Notificar al usuario que su solicitud fue rechazada
+    const ns: any = (this.gateway as any).server;
+    ns?.to?.(`user:${dto.targetUserId}`)?.emit?.('editRequestRejected', {
+      projectId,
+      message: 'Tu solicitud de edición fue rechazada',
+    });
+
+    return { ok: result };
   }
 }

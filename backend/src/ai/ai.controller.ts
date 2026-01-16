@@ -4,9 +4,11 @@ import {
   Post,
   UsePipes,
   ValidationPipe,
+  BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { AiService, AiResponse } from './ai.service';
-import { IsString } from 'class-validator';
+import { IsString, MaxLength, IsOptional, IsArray } from 'class-validator';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { UseInterceptors, UploadedFile } from '@nestjs/common';
 
@@ -22,14 +24,34 @@ import {
 
 export class AnalyzeUmlDto {
   @IsString()
+  @MaxLength(5000, { message: 'El input no puede exceder 5000 caracteres' })
   userInput!: string;
+}
+
+export class SuggestCardinalityDto {
+  @IsString()
+  @MaxLength(100)
+  sourceClass!: string;
+
+  @IsString()
+  @MaxLength(100)
+  targetClass!: string;
+
+  @IsOptional()
+  @IsArray()
+  sourceAttributes?: string[];
+
+  @IsOptional()
+  @IsArray()
+  targetAttributes?: string[];
 }
 
 @Controller('ai')
 export class AiController {
+  private readonly logger = new Logger(AiController.name);
+
   constructor(
     private readonly aiService: AiService,
-
     private readonly assistantService: AiAssistantService,
     private readonly diagramScanner: DiagramScannerService,
   ) {}
@@ -41,20 +63,13 @@ export class AiController {
   }
 
   @Post('suggest-cardinality')
-  async suggestCardinality(
-    @Body()
-    body: {
-      sourceClass: string;
-      targetClass: string;
-      sourceAttributes?: string[];
-      targetAttributes?: string[];
-    },
-  ) {
+  @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
+  async suggestCardinality(@Body() dto: SuggestCardinalityDto) {
     return this.aiService.suggestCardinality(
-      body.sourceClass,
-      body.targetClass,
-      body.sourceAttributes,
-      body.targetAttributes,
+      dto.sourceClass,
+      dto.targetClass,
+      dto.sourceAttributes,
+      dto.targetAttributes,
     );
   }
 
@@ -68,7 +83,7 @@ export class AiController {
         if (file.mimetype.match(/\/(jpg|jpeg|png|gif|bmp|webp)$/)) {
           cb(null, true);
         } else {
-          cb(new Error('Solo se permiten archivos de imagen'), false);
+          cb(new BadRequestException('Solo se permiten archivos de imagen'), false);
         }
       },
     }),
@@ -77,7 +92,7 @@ export class AiController {
     @UploadedFile() file: Express.Multer.File,
   ): Promise<AiResponse> {
     if (!file) {
-      throw new Error('No se proporcionó ningún archivo de imagen');
+      throw new BadRequestException('No se proporcionó ningún archivo de imagen');
     }
 
     return this.aiService.analyzeUmlFromImage(file.buffer);
@@ -93,7 +108,7 @@ export class AiController {
         if (file.mimetype.match(/\/(jpg|jpeg|png|gif|bmp|webp)$/)) {
           cb(null, true);
         } else {
-          cb(new Error('Solo se permiten archivos de imagen'), false);
+          cb(new BadRequestException('Solo se permiten archivos de imagen'), false);
         }
       },
     }),
@@ -102,10 +117,10 @@ export class AiController {
     @UploadedFile() file: Express.Multer.File,
   ): Promise<AssistantResponse> {
     if (!file) {
-      throw new Error('No se proporcionó ningún archivo de imagen');
+      throw new BadRequestException('No se proporcionó ningún archivo de imagen');
     }
 
-    console.log('[AI Controller] Escaneando diagrama desde imagen:', {
+    this.logger.log('[AI Controller] Escaneando diagrama desde imagen:', {
       filename: file.originalname,
       size: file.size,
       mimetype: file.mimetype,
@@ -114,7 +129,7 @@ export class AiController {
     // Paso 1: Escanear la imagen con OCR + IA
     const scanResult = await this.diagramScanner.scanDiagramImage(file.buffer);
 
-    console.log('[AI Controller] Scan completado:', {
+    this.logger.log('[AI Controller] Scan completado:', {
       classCount: scanResult.classes.length,
       relationCount: scanResult.relations.length,
       confidence: scanResult.confidence,
@@ -124,7 +139,7 @@ export class AiController {
     const assistantResponse =
       await this.assistantService.convertScanToSuggestions(scanResult);
 
-    console.log('[AI Controller] Sugerencias generadas:', {
+    this.logger.log('[AI Controller] Sugerencias generadas:', {
       classesCount: assistantResponse.suggestions?.classes?.length || 0,
       relationsCount: assistantResponse.suggestions?.relations?.length || 0,
     });
@@ -137,7 +152,7 @@ export class AiController {
     @Body() body: { context: DiagramContext; message?: string },
   ): Promise<AssistantResponse> {
     // 🔍 DEBUG: Log para verificar que llega el contexto
-    console.log('[AI Controller] Petición recibida:', {
+    this.logger.log('[AI Controller] Petición recibida:', {
       hasContext: !!body.context,
       nodeCount: body.context?.nodes?.length || 0,
       edgeCount: body.context?.edges?.length || 0,

@@ -6,6 +6,7 @@ import { Selection } from "@antv/x6-plugin-selection";
 import { Toaster, toast } from "react-hot-toast";
 
 import { api } from "../lib/api";
+import { getAuthToken, applyAxiosAuthHeader } from "../lib/auth";
 import { useAuth } from "../state/AuthContext";
 
 import { registerShapesOnce } from "../uml/shapes";
@@ -24,27 +25,6 @@ import { io, Socket } from "socket.io-client";
 
 import * as Y from "yjs";
 import { fromBase64, toBase64 } from "lib0/buffer";
-
-/* ===================== Helpers de sesión ===================== */
-function getAuthToken(fallback?: string | null): string | null {
-  const keys = [
-    "token",
-    "auth.token",
-    "accessToken",
-    "auth.accessToken",
-    "jwt",
-    "auth.jwt",
-  ];
-  for (const k of keys) {
-    const v = localStorage.getItem(k);
-    if (v) return v;
-  }
-  return fallback ?? null;
-}
-function applyAxiosAuthHeader(token: string | null) {
-  if (token) api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
-  else delete api.defaults.headers.common["Authorization"];
-}
 
 /* ===================== Helpers de rol (sin degradar) ===================== */
 type UiRole = "OWNER" | "ADMIN" | "EDITOR" | "VIEWER";
