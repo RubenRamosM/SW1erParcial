@@ -826,9 +826,372 @@ Si no hay sugerencias claras, responde solo con "content".`;
       };
     }
 
+    // Farmacia / Inventario de medicamentos
+    if (
+      lower.includes('farmacia') ||
+      lower.includes('medicamento') ||
+      lower.includes('medicina') ||
+      lower.includes('drogueria') ||
+      (lower.includes('inventario') && (lower.includes('farmac') || lower.includes('medic')))
+    ) {
+      return {
+        content:
+          'Propuesta para sistema de farmacia/inventario de medicamentos con Medicamento, Proveedor, Venta y Cliente.',
+        suggestions: {
+          classes: [
+            {
+              name: 'Medicamento',
+              attributes: [
+                'String nombre',
+                'String codigo',
+                'String descripcion',
+                'Double precio',
+                'Integer stock',
+                'Date fechaVencimiento',
+                'String categoria',
+                'Boolean requiereReceta',
+              ],
+              methods: [
+                'actualizarStock()',
+                'verificarVencimiento()',
+                'aplicarDescuento()',
+                'obtenerDetalles()',
+              ],
+            },
+            {
+              name: 'Proveedor',
+              attributes: [
+                'String nombre',
+                'String nit',
+                'String telefono',
+                'String email',
+                'String direccion',
+              ],
+              methods: [
+                'registrarPedido()',
+                'consultarHistorial()',
+                'actualizarDatos()',
+              ],
+            },
+            {
+              name: 'Venta',
+              attributes: [
+                'Date fecha',
+                'Double total',
+                'String estado',
+                'String metodoPago',
+              ],
+              methods: [
+                'calcularTotal()',
+                'aplicarDescuento()',
+                'generarFactura()',
+                'procesarPago()',
+              ],
+            },
+            {
+              name: 'Cliente',
+              attributes: [
+                'String nombre',
+                'String documento',
+                'String telefono',
+                'String email',
+              ],
+              methods: [
+                'registrar()',
+                'consultarHistorial()',
+                'actualizarDatos()',
+              ],
+            },
+            {
+              name: 'DetalleVenta',
+              attributes: [
+                'Integer cantidad',
+                'Double precioUnitario',
+                'Double subtotal',
+              ],
+              methods: ['calcularSubtotal()'],
+            },
+          ],
+          relations: [
+            { from: 'Cliente', to: 'Venta', type: 'ONE_TO_MANY' },
+            { from: 'Venta', to: 'DetalleVenta', type: 'ONE_TO_MANY' },
+            { from: 'Medicamento', to: 'DetalleVenta', type: 'ONE_TO_MANY' },
+            { from: 'Proveedor', to: 'Medicamento', type: 'ONE_TO_MANY' },
+          ],
+        },
+      };
+    }
+
+    // Sistema de inventario genérico
+    if (lower.includes('inventario') || lower.includes('almacen') || lower.includes('bodega')) {
+      return {
+        content:
+          'Propuesta para sistema de inventario con Producto, Categoria, Proveedor y MovimientoInventario.',
+        suggestions: {
+          classes: [
+            {
+              name: 'Producto',
+              attributes: [
+                'String codigo',
+                'String nombre',
+                'String descripcion',
+                'Double precio',
+                'Integer stockActual',
+                'Integer stockMinimo',
+              ],
+              methods: [
+                'actualizarStock()',
+                'verificarStockMinimo()',
+                'calcularValorInventario()',
+              ],
+            },
+            {
+              name: 'Categoria',
+              attributes: ['String nombre', 'String descripcion'],
+              methods: ['listarProductos()', 'obtenerEstadisticas()'],
+            },
+            {
+              name: 'Proveedor',
+              attributes: [
+                'String nombre',
+                'String contacto',
+                'String telefono',
+                'String email',
+              ],
+              methods: ['realizarPedido()', 'consultarHistorial()'],
+            },
+            {
+              name: 'MovimientoInventario',
+              attributes: [
+                'Date fecha',
+                'String tipo',
+                'Integer cantidad',
+                'String motivo',
+              ],
+              methods: ['registrar()', 'generarReporte()'],
+            },
+          ],
+          relations: [
+            { from: 'Categoria', to: 'Producto', type: 'ONE_TO_MANY' },
+            { from: 'Proveedor', to: 'Producto', type: 'ONE_TO_MANY' },
+            { from: 'Producto', to: 'MovimientoInventario', type: 'ONE_TO_MANY' },
+          ],
+        },
+      };
+    }
+
+    // Hospital / Clínica
+    if (
+      lower.includes('hospital') ||
+      lower.includes('clinica') ||
+      lower.includes('paciente') ||
+      lower.includes('medico') ||
+      lower.includes('cita')
+    ) {
+      return {
+        content:
+          'Propuesta para sistema hospitalario con Paciente, Medico, Cita e HistorialMedico.',
+        suggestions: {
+          classes: [
+            {
+              name: 'Paciente',
+              attributes: [
+                'String nombre',
+                'String documento',
+                'Date fechaNacimiento',
+                'String telefono',
+                'String direccion',
+              ],
+              methods: [
+                'agendarCita()',
+                'consultarHistorial()',
+                'actualizarDatos()',
+              ],
+            },
+            {
+              name: 'Medico',
+              attributes: [
+                'String nombre',
+                'String especialidad',
+                'String numeroLicencia',
+                'String telefono',
+              ],
+              methods: [
+                'atenderPaciente()',
+                'consultarAgenda()',
+                'emitirReceta()',
+              ],
+            },
+            {
+              name: 'Cita',
+              attributes: [
+                'Date fecha',
+                'String hora',
+                'String motivo',
+                'String estado',
+              ],
+              methods: ['confirmar()', 'cancelar()', 'reprogramar()'],
+            },
+            {
+              name: 'HistorialMedico',
+              attributes: [
+                'Date fecha',
+                'String diagnostico',
+                'String tratamiento',
+                'String observaciones',
+              ],
+              methods: ['agregar()', 'consultar()'],
+            },
+          ],
+          relations: [
+            { from: 'Paciente', to: 'Cita', type: 'ONE_TO_MANY' },
+            { from: 'Medico', to: 'Cita', type: 'ONE_TO_MANY' },
+            { from: 'Paciente', to: 'HistorialMedico', type: 'ONE_TO_MANY' },
+          ],
+        },
+      };
+    }
+
+    // Restaurante
+    if (
+      lower.includes('restaurante') ||
+      lower.includes('menu') ||
+      lower.includes('comida') ||
+      lower.includes('plato')
+    ) {
+      return {
+        content:
+          'Propuesta para sistema de restaurante con Mesa, Plato, Pedido y Cliente.',
+        suggestions: {
+          classes: [
+            {
+              name: 'Mesa',
+              attributes: [
+                'Integer numero',
+                'Integer capacidad',
+                'String estado',
+              ],
+              methods: ['ocupar()', 'liberar()', 'reservar()'],
+            },
+            {
+              name: 'Plato',
+              attributes: [
+                'String nombre',
+                'String descripcion',
+                'Double precio',
+                'String categoria',
+                'Boolean disponible',
+              ],
+              methods: ['actualizarDisponibilidad()', 'obtenerDetalles()'],
+            },
+            {
+              name: 'Pedido',
+              attributes: [
+                'Date fecha',
+                'Double total',
+                'String estado',
+              ],
+              methods: [
+                'calcularTotal()',
+                'agregarPlato()',
+                'cerrarPedido()',
+              ],
+            },
+            {
+              name: 'Cliente',
+              attributes: [
+                'String nombre',
+                'String telefono',
+              ],
+              methods: ['hacerReserva()', 'consultarHistorial()'],
+            },
+          ],
+          relations: [
+            { from: 'Mesa', to: 'Pedido', type: 'ONE_TO_MANY' },
+            { from: 'Plato', to: 'Pedido', type: 'MANY_TO_MANY' },
+            { from: 'Cliente', to: 'Pedido', type: 'ONE_TO_MANY' },
+          ],
+        },
+      };
+    }
+
+    // Universidad / Escuela
+    if (
+      lower.includes('universidad') ||
+      lower.includes('escuela') ||
+      lower.includes('colegio') ||
+      lower.includes('estudiante') ||
+      lower.includes('curso') ||
+      lower.includes('materia')
+    ) {
+      return {
+        content:
+          'Propuesta para sistema educativo con Estudiante, Profesor, Curso e Inscripcion.',
+        suggestions: {
+          classes: [
+            {
+              name: 'Estudiante',
+              attributes: [
+                'String nombre',
+                'String matricula',
+                'String email',
+                'Date fechaIngreso',
+              ],
+              methods: [
+                'inscribirCurso()',
+                'consultarCalificaciones()',
+                'actualizarDatos()',
+              ],
+            },
+            {
+              name: 'Profesor',
+              attributes: [
+                'String nombre',
+                'String especialidad',
+                'String email',
+              ],
+              methods: [
+                'asignarCalificacion()',
+                'consultarCursos()',
+                'crearTarea()',
+              ],
+            },
+            {
+              name: 'Curso',
+              attributes: [
+                'String codigo',
+                'String nombre',
+                'Integer creditos',
+                'String horario',
+              ],
+              methods: [
+                'agregarEstudiante()',
+                'publicarCalificaciones()',
+                'obtenerEstadisticas()',
+              ],
+            },
+            {
+              name: 'Inscripcion',
+              attributes: [
+                'Date fecha',
+                'Double calificacion',
+                'String estado',
+              ],
+              methods: ['calcularPromedio()', 'actualizarEstado()'],
+            },
+          ],
+          relations: [
+            { from: 'Estudiante', to: 'Inscripcion', type: 'ONE_TO_MANY' },
+            { from: 'Curso', to: 'Inscripcion', type: 'ONE_TO_MANY' },
+            { from: 'Profesor', to: 'Curso', type: 'ONE_TO_MANY' },
+          ],
+        },
+      };
+    }
+
     return {
       content:
-        'Para ayudarte mejor, cuéntame: tipo de sistema, entidades principales y funcionalidades. Ej.: “Biblioteca”, “E-commerce”, “RRHH”, etc.',
+        'Para ayudarte mejor, cuéntame: tipo de sistema, entidades principales y funcionalidades. Ej.: "Biblioteca", "E-commerce", "Farmacia", "Hospital", "Restaurante", "Universidad", etc.',
     };
   }
 }

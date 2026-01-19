@@ -1382,6 +1382,12 @@ export class AiAssistantService {
       };
     }
 
+    // ----- Detección de descripciones de sistemas/dominios -----
+    const domainResponse = this.detectDomainAndSuggest(normalized, message);
+    if (domainResponse) {
+      return domainResponse;
+    }
+
     // ----- fallback IA externa (opcional) -----
     try {
       const ai = await this.aiService.analyzeUmlRequest(message);
@@ -1520,5 +1526,524 @@ export class AiAssistantService {
         'Prepárate para generar código',
       ],
     };
+  }
+
+  /**
+   * Detecta si el mensaje describe un dominio/sistema y genera sugerencias de clases apropiadas
+   */
+  private detectDomainAndSuggest(normalized: string, originalMessage: string): AssistantResponse | null {
+    // Detectar sistema de farmacia / inventario de medicamentos
+    if (
+      normalized.includes('farmacia') ||
+      normalized.includes('medicamento') ||
+      normalized.includes('medicina') ||
+      normalized.includes('drogueria') ||
+      (normalized.includes('inventario') && (normalized.includes('farmac') || normalized.includes('medic')))
+    ) {
+      return {
+        message: `🏥 **¡Excelente! Voy a sugerirte clases para un Sistema de Farmacia:**\n\nHe identificado las entidades principales para tu sistema. Haz clic en "Agregar" en cada clase para añadirla al diagrama.\n\n**Clases sugeridas:**\n• **Medicamento** - Gestión de productos farmacéuticos\n• **Proveedor** - Gestión de proveedores\n• **Venta** - Registro de ventas\n• **Cliente** - Información de clientes\n• **DetalleVenta** - Líneas de cada venta`,
+        suggestions: {
+          classes: [
+            {
+              name: 'Medicamento',
+              attributes: [
+                'codigo: String',
+                'nombre: String',
+                'descripcion: String',
+                'precio: Double',
+                'stock: Integer',
+                'fechaVencimiento: Date',
+                'categoria: String',
+                'requiereReceta: Boolean',
+              ],
+              methods: [
+                'actualizarStock()',
+                'verificarVencimiento()',
+                'aplicarDescuento()',
+              ],
+            },
+            {
+              name: 'Proveedor',
+              attributes: [
+                'nombre: String',
+                'nit: String',
+                'telefono: String',
+                'email: String',
+                'direccion: String',
+              ],
+              methods: [
+                'registrarPedido()',
+                'consultarHistorial()',
+              ],
+            },
+            {
+              name: 'Venta',
+              attributes: [
+                'fecha: Date',
+                'total: Double',
+                'estado: String',
+                'metodoPago: String',
+              ],
+              methods: [
+                'calcularTotal()',
+                'generarFactura()',
+                'procesarPago()',
+              ],
+            },
+            {
+              name: 'Cliente',
+              attributes: [
+                'nombre: String',
+                'documento: String',
+                'telefono: String',
+                'email: String',
+              ],
+              methods: [
+                'registrar()',
+                'consultarHistorial()',
+              ],
+            },
+            {
+              name: 'DetalleVenta',
+              attributes: [
+                'cantidad: Integer',
+                'precioUnitario: Double',
+                'subtotal: Double',
+              ],
+              methods: ['calcularSubtotal()'],
+            },
+          ],
+          relations: [
+            { from: 'Cliente', to: 'Venta', type: 'assoc', multiplicity: { source: '1', target: '*' } },
+            { from: 'Venta', to: 'DetalleVenta', type: 'comp', multiplicity: { source: '1', target: '*' } },
+            { from: 'Medicamento', to: 'DetalleVenta', type: 'assoc', multiplicity: { source: '*', target: '1' } },
+            { from: 'Proveedor', to: 'Medicamento', type: 'assoc', multiplicity: { source: '1', target: '*' } },
+          ],
+        },
+        tips: [
+          '💡 Haz clic en "Agregar" para cada clase',
+          '🔗 Las relaciones se crearán automáticamente',
+          '✏️ Puedes editar cada clase con doble clic',
+        ],
+        nextSteps: [
+          '1. Agrega las clases sugeridas',
+          '2. Conecta las clases con relaciones',
+          '3. Personaliza atributos según tu necesidad',
+          '4. Genera el código Spring Boot',
+        ],
+      };
+    }
+
+    // Detectar sistema de inventario genérico
+    if (
+      normalized.includes('inventario') ||
+      normalized.includes('almacen') ||
+      normalized.includes('bodega') ||
+      normalized.includes('stock')
+    ) {
+      return {
+        message: `📦 **¡Perfecto! Voy a sugerirte clases para un Sistema de Inventario:**\n\nHe identificado las entidades principales. Haz clic en "Agregar" para cada clase.\n\n**Clases sugeridas:**\n• **Producto** - Gestión de productos\n• **Categoria** - Clasificación de productos\n• **Proveedor** - Gestión de proveedores\n• **MovimientoInventario** - Entradas y salidas`,
+        suggestions: {
+          classes: [
+            {
+              name: 'Producto',
+              attributes: [
+                'codigo: String',
+                'nombre: String',
+                'descripcion: String',
+                'precio: Double',
+                'stockActual: Integer',
+                'stockMinimo: Integer',
+              ],
+              methods: [
+                'actualizarStock()',
+                'verificarStockMinimo()',
+                'calcularValorInventario()',
+              ],
+            },
+            {
+              name: 'Categoria',
+              attributes: [
+                'nombre: String',
+                'descripcion: String',
+              ],
+              methods: ['listarProductos()', 'obtenerEstadisticas()'],
+            },
+            {
+              name: 'Proveedor',
+              attributes: [
+                'nombre: String',
+                'contacto: String',
+                'telefono: String',
+                'email: String',
+              ],
+              methods: ['realizarPedido()', 'consultarHistorial()'],
+            },
+            {
+              name: 'MovimientoInventario',
+              attributes: [
+                'fecha: Date',
+                'tipo: String',
+                'cantidad: Integer',
+                'motivo: String',
+              ],
+              methods: ['registrar()', 'generarReporte()'],
+            },
+          ],
+          relations: [
+            { from: 'Categoria', to: 'Producto', type: 'assoc', multiplicity: { source: '1', target: '*' } },
+            { from: 'Proveedor', to: 'Producto', type: 'assoc', multiplicity: { source: '1', target: '*' } },
+            { from: 'Producto', to: 'MovimientoInventario', type: 'assoc', multiplicity: { source: '1', target: '*' } },
+          ],
+        },
+        tips: [
+          '💡 Haz clic en "Agregar" para cada clase',
+          '🔗 Conecta las clases según las relaciones sugeridas',
+        ],
+        nextSteps: [
+          '1. Agrega las clases sugeridas',
+          '2. Personaliza los atributos',
+          '3. Crea las relaciones',
+        ],
+      };
+    }
+
+    // Detectar sistema hospitalario
+    if (
+      normalized.includes('hospital') ||
+      normalized.includes('clinica') ||
+      normalized.includes('paciente') ||
+      normalized.includes('medico') ||
+      normalized.includes('cita') ||
+      normalized.includes('salud')
+    ) {
+      return {
+        message: `🏥 **¡Perfecto! Voy a sugerirte clases para un Sistema Hospitalario:**\n\n**Clases sugeridas:**\n• **Paciente** - Información de pacientes\n• **Medico** - Personal médico\n• **Cita** - Gestión de citas\n• **HistorialMedico** - Historial clínico`,
+        suggestions: {
+          classes: [
+            {
+              name: 'Paciente',
+              attributes: [
+                'nombre: String',
+                'documento: String',
+                'fechaNacimiento: Date',
+                'telefono: String',
+                'direccion: String',
+              ],
+              methods: [
+                'agendarCita()',
+                'consultarHistorial()',
+              ],
+            },
+            {
+              name: 'Medico',
+              attributes: [
+                'nombre: String',
+                'especialidad: String',
+                'numeroLicencia: String',
+                'telefono: String',
+              ],
+              methods: [
+                'atenderPaciente()',
+                'consultarAgenda()',
+                'emitirReceta()',
+              ],
+            },
+            {
+              name: 'Cita',
+              attributes: [
+                'fecha: Date',
+                'hora: String',
+                'motivo: String',
+                'estado: String',
+              ],
+              methods: ['confirmar()', 'cancelar()', 'reprogramar()'],
+            },
+            {
+              name: 'HistorialMedico',
+              attributes: [
+                'fecha: Date',
+                'diagnostico: String',
+                'tratamiento: String',
+                'observaciones: String',
+              ],
+              methods: ['agregar()', 'consultar()'],
+            },
+          ],
+          relations: [
+            { from: 'Paciente', to: 'Cita', type: 'assoc', multiplicity: { source: '1', target: '*' } },
+            { from: 'Medico', to: 'Cita', type: 'assoc', multiplicity: { source: '1', target: '*' } },
+            { from: 'Paciente', to: 'HistorialMedico', type: 'assoc', multiplicity: { source: '1', target: '*' } },
+          ],
+        },
+      };
+    }
+
+    // Detectar sistema de tienda/e-commerce
+    if (
+      normalized.includes('tienda') ||
+      normalized.includes('ecommerce') ||
+      normalized.includes('comercio') ||
+      normalized.includes('venta') ||
+      normalized.includes('compra')
+    ) {
+      return {
+        message: `🛒 **¡Perfecto! Voy a sugerirte clases para un Sistema de Tienda/E-commerce:**\n\n**Clases sugeridas:**\n• **Cliente** - Información de clientes\n• **Producto** - Catálogo de productos\n• **Pedido** - Gestión de pedidos\n• **DetallePedido** - Líneas de pedido`,
+        suggestions: {
+          classes: [
+            {
+              name: 'Cliente',
+              attributes: [
+                'nombre: String',
+                'email: String',
+                'telefono: String',
+                'direccion: String',
+              ],
+              methods: [
+                'realizarCompra()',
+                'consultarPedidos()',
+              ],
+            },
+            {
+              name: 'Producto',
+              attributes: [
+                'nombre: String',
+                'descripcion: String',
+                'precio: Double',
+                'stock: Integer',
+                'categoria: String',
+              ],
+              methods: [
+                'actualizarStock()',
+                'calcularDescuento()',
+              ],
+            },
+            {
+              name: 'Pedido',
+              attributes: [
+                'fecha: Date',
+                'total: Double',
+                'estado: String',
+              ],
+              methods: [
+                'calcularTotal()',
+                'actualizarEstado()',
+                'generarFactura()',
+              ],
+            },
+            {
+              name: 'DetallePedido',
+              attributes: [
+                'cantidad: Integer',
+                'precioUnitario: Double',
+                'subtotal: Double',
+              ],
+              methods: ['calcularSubtotal()'],
+            },
+          ],
+          relations: [
+            { from: 'Cliente', to: 'Pedido', type: 'assoc', multiplicity: { source: '1', target: '*' } },
+            { from: 'Pedido', to: 'DetallePedido', type: 'comp', multiplicity: { source: '1', target: '*' } },
+            { from: 'Producto', to: 'DetallePedido', type: 'assoc', multiplicity: { source: '*', target: '1' } },
+          ],
+        },
+      };
+    }
+
+    // Detectar sistema educativo
+    if (
+      normalized.includes('universidad') ||
+      normalized.includes('escuela') ||
+      normalized.includes('colegio') ||
+      normalized.includes('estudiante') ||
+      normalized.includes('curso') ||
+      normalized.includes('materia') ||
+      normalized.includes('educativo') ||
+      normalized.includes('academico')
+    ) {
+      return {
+        message: `🎓 **¡Perfecto! Voy a sugerirte clases para un Sistema Educativo:**\n\n**Clases sugeridas:**\n• **Estudiante** - Información de estudiantes\n• **Profesor** - Personal docente\n• **Curso** - Gestión de cursos\n• **Inscripcion** - Matrículas`,
+        suggestions: {
+          classes: [
+            {
+              name: 'Estudiante',
+              attributes: [
+                'nombre: String',
+                'matricula: String',
+                'email: String',
+                'fechaIngreso: Date',
+              ],
+              methods: [
+                'inscribirCurso()',
+                'consultarCalificaciones()',
+              ],
+            },
+            {
+              name: 'Profesor',
+              attributes: [
+                'nombre: String',
+                'especialidad: String',
+                'email: String',
+              ],
+              methods: [
+                'asignarCalificacion()',
+                'consultarCursos()',
+              ],
+            },
+            {
+              name: 'Curso',
+              attributes: [
+                'codigo: String',
+                'nombre: String',
+                'creditos: Integer',
+                'horario: String',
+              ],
+              methods: [
+                'agregarEstudiante()',
+                'publicarCalificaciones()',
+              ],
+            },
+            {
+              name: 'Inscripcion',
+              attributes: [
+                'fecha: Date',
+                'calificacion: Double',
+                'estado: String',
+              ],
+              methods: ['calcularPromedio()', 'actualizarEstado()'],
+            },
+          ],
+          relations: [
+            { from: 'Estudiante', to: 'Inscripcion', type: 'assoc', multiplicity: { source: '1', target: '*' } },
+            { from: 'Curso', to: 'Inscripcion', type: 'assoc', multiplicity: { source: '1', target: '*' } },
+            { from: 'Profesor', to: 'Curso', type: 'assoc', multiplicity: { source: '1', target: '*' } },
+          ],
+        },
+      };
+    }
+
+    // Detectar sistema de restaurante
+    if (
+      normalized.includes('restaurante') ||
+      normalized.includes('menu') ||
+      normalized.includes('comida') ||
+      normalized.includes('plato') ||
+      normalized.includes('cocina')
+    ) {
+      return {
+        message: `🍽️ **¡Perfecto! Voy a sugerirte clases para un Sistema de Restaurante:**\n\n**Clases sugeridas:**\n• **Mesa** - Gestión de mesas\n• **Plato** - Menú del restaurante\n• **Pedido** - Pedidos de clientes\n• **Cliente** - Información de clientes`,
+        suggestions: {
+          classes: [
+            {
+              name: 'Mesa',
+              attributes: [
+                'numero: Integer',
+                'capacidad: Integer',
+                'estado: String',
+              ],
+              methods: ['ocupar()', 'liberar()', 'reservar()'],
+            },
+            {
+              name: 'Plato',
+              attributes: [
+                'nombre: String',
+                'descripcion: String',
+                'precio: Double',
+                'categoria: String',
+                'disponible: Boolean',
+              ],
+              methods: ['actualizarDisponibilidad()', 'obtenerDetalles()'],
+            },
+            {
+              name: 'Pedido',
+              attributes: [
+                'fecha: Date',
+                'total: Double',
+                'estado: String',
+              ],
+              methods: [
+                'calcularTotal()',
+                'agregarPlato()',
+                'cerrarPedido()',
+              ],
+            },
+            {
+              name: 'Cliente',
+              attributes: [
+                'nombre: String',
+                'telefono: String',
+              ],
+              methods: ['hacerReserva()', 'consultarHistorial()'],
+            },
+          ],
+          relations: [
+            { from: 'Mesa', to: 'Pedido', type: 'assoc', multiplicity: { source: '1', target: '*' } },
+            { from: 'Cliente', to: 'Pedido', type: 'assoc', multiplicity: { source: '1', target: '*' } },
+          ],
+        },
+      };
+    }
+
+    // Detectar sistema de biblioteca
+    if (
+      normalized.includes('biblioteca') ||
+      normalized.includes('libro') ||
+      normalized.includes('prestamo') ||
+      normalized.includes('lectura')
+    ) {
+      return {
+        message: `📚 **¡Perfecto! Voy a sugerirte clases para un Sistema de Biblioteca:**\n\n**Clases sugeridas:**\n• **Usuario** - Usuarios de la biblioteca\n• **Libro** - Catálogo de libros\n• **Prestamo** - Gestión de préstamos`,
+        suggestions: {
+          classes: [
+            {
+              name: 'Usuario',
+              attributes: [
+                'nombre: String',
+                'email: String',
+                'fechaRegistro: Date',
+              ],
+              methods: [
+                'prestarLibro()',
+                'devolverLibro()',
+                'consultarHistorial()',
+              ],
+            },
+            {
+              name: 'Libro',
+              attributes: [
+                'titulo: String',
+                'autor: String',
+                'isbn: String',
+                'disponible: Boolean',
+              ],
+              methods: [
+                'marcarDisponible()',
+                'marcarPrestado()',
+              ],
+            },
+            {
+              name: 'Prestamo',
+              attributes: [
+                'fechaPrestamo: Date',
+                'fechaVencimiento: Date',
+                'devuelto: Boolean',
+              ],
+              methods: [
+                'calcularMulta()',
+                'marcarDevuelto()',
+                'extenderPrestamo()',
+              ],
+            },
+          ],
+          relations: [
+            { from: 'Usuario', to: 'Prestamo', type: 'assoc', multiplicity: { source: '1', target: '*' } },
+            { from: 'Libro', to: 'Prestamo', type: 'assoc', multiplicity: { source: '1', target: '*' } },
+          ],
+        },
+      };
+    }
+
+    // No se detectó ningún dominio conocido
+    return null;
   }
 }

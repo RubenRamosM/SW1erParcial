@@ -20,9 +20,11 @@ type Project = {
 type EditRequestNotif = {
   requestId: string;
   projectId: string;
+  projectName?: string | null;
   requesterId: string;
-  message?: string | null;
   requesterName?: string | null;
+  message?: string | null;
+  createdAt?: string | null;
 };
 
 /* ===================== UI Icons ===================== */
@@ -660,10 +662,10 @@ function NotificationDropdown({
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-surface-800 dark:text-surface-200 truncate">
-                    {r.requesterName || r.requesterId}
+                    {r.requesterName || "Usuario desconocido"}
                   </p>
                   <p className="text-xs text-surface-500 dark:text-surface-400 truncate">
-                    Proyecto: {r.projectId.slice(0, 8)}...
+                    Proyecto: {r.projectName || r.projectId.slice(0, 8) + "..."}
                   </p>
                   {r.message && (
                     <p className="mt-1.5 text-xs italic text-surface-600 dark:text-surface-400 line-clamp-2">
@@ -748,6 +750,22 @@ export default function Dashboard() {
     }
   }
 
+  // Cargar solicitudes pendientes desde el servidor
+  async function loadPendingRequests() {
+    if (!effectiveToken) return;
+    try {
+      console.log("[Dashboard] Cargando solicitudes pendientes...");
+      const { data } = await api.get<EditRequestNotif[]>("/projects/pending-requests", {
+        headers: { Authorization: `Bearer ${effectiveToken}` },
+      });
+      console.log("[Dashboard] Solicitudes pendientes recibidas:", data);
+      setRequests(data);
+    } catch (err) {
+      // Silenciar errores de carga de solicitudes
+      console.warn("[Dashboard] Error al cargar solicitudes pendientes:", err);
+    }
+  }
+
   useEffect(() => {
     if (!effectiveToken) {
       setProjects([]);
@@ -755,6 +773,7 @@ export default function Dashboard() {
       return;
     }
     loadProjects();
+    loadPendingRequests(); // Cargar solicitudes pendientes al iniciar
   }, [effectiveToken]);
 
   const openProject = (id: string) => {
@@ -801,10 +820,12 @@ export default function Dashboard() {
     socketRef.current = s;
 
     s.on("connect", () => {
+      console.log("[Dashboard Socket] Conectado, uniéndose a sala de owner...");
       s.emit("joinOwner", { authToken: effectiveToken });
     });
 
     s.on("editRequest", (payload: EditRequestNotif) => {
+      console.log("[Dashboard Socket] Recibido editRequest:", payload);
       setRequests((prev) => {
         if (prev.some((r) => r.requestId === payload.requestId)) return prev;
         return [payload, ...prev];

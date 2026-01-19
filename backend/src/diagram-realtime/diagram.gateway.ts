@@ -262,14 +262,24 @@ export class DiagramGateway implements OnGatewayInit {
       create: { projectId, requesterId: userId, message: message ?? null },
     });
 
-    const owner = await this.prisma.project.findUnique({
-      where: { id: projectId },
-      select: { ownerId: true },
-    });
+    // Obtener datos del proyecto y del solicitante para la notificación
+    const [owner, requester] = await Promise.all([
+      this.prisma.project.findUnique({
+        where: { id: projectId },
+        select: { ownerId: true, name: true },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      }),
+    ]);
+
     if (owner?.ownerId) {
       this.server.to(`user:${owner.ownerId}`).emit('editRequest', {
         projectId,
+        projectName: owner.name,
         requesterId: userId,
+        requesterName: requester?.name || requester?.email || 'Usuario',
         requestId: req.id,
         message: req.message,
       });

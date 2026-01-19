@@ -6,7 +6,7 @@ import toast from "react-hot-toast";
 import JSZip from "jszip";
 import { startEdgeMode } from "../actions/edges";
 import type { EdgeShape } from "../actions/edges";
-import { FlutterCrudGenerator } from "../codegen/FlutterCrudGenerator";
+// TEMPORALMENTE COMENTADO: import { FlutterCrudGenerator } from "../codegen/FlutterCrudGenerator";
 
 export type Tool =
   | "cursor"
@@ -823,6 +823,7 @@ export default function Sidebar({
     }
   };
 
+  /* TEMPORALMENTE COMENTADO - Flutter Generator Function
   const handleGenerateFlutter = async () => {
     try {
       if (!graph) {
@@ -920,8 +921,6 @@ export default function Sidebar({
       // cámbialo por tu IP/puerto si vas a usar dispositivo físico o iOS.
       const flutterGen = new FlutterCrudGenerator({
         appName: "UmlCrudApp",
-        packageName: "com.example.umlcrud",
-        apiBaseUrl: "http://10.0.2.2:8080",
       });
 
       clases.forEach((cls) => flutterGen.addClass(cls));
@@ -951,6 +950,7 @@ export default function Sidebar({
       toast.error("Error al generar la app Flutter");
     }
   };
+  */
 
   // ======= Auxiliares POM / properties / Application.java =======
 
@@ -1065,6 +1065,8 @@ export default function Sidebar({
               Generar Código Spring
             </button>
 
+            {/* TEMPORALMENTE OCULTO - Botón Flutter App Generator */}
+            {/* 
             <button
               onClick={handleGenerateFlutter}
               className="w-full btn-secondary justify-center !py-3"
@@ -1075,6 +1077,7 @@ export default function Sidebar({
               </svg>
               Generar App Flutter
             </button>
+            */}
           </div>
         </section>
       </div>

@@ -5,7 +5,7 @@ import { MiniMap as X6MiniMap } from "@antv/x6-plugin-minimap";
 import { Export } from "@antv/x6-plugin-export";
 import type { Tool } from "./Sidebar";
 import { IconCenter, IconCursor, IconZoomIn, IconZoomOut } from "../icons";
-import { Save, Share2, Download, ChevronDown } from "lucide-react";
+import { Save, Share2, Download, ChevronDown, ChevronUp } from "lucide-react";
 import toast from "react-hot-toast";
 
 type Props = {
@@ -45,8 +45,13 @@ export default function DiagramControls({
   // ---- Estado mínimo de UI ----
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [position, setPosition] = useState({ top: 16, left: "50%" });
 
   const exportMenuRef = useRef<HTMLDivElement>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const dragOffset = useRef({ x: 0, y: 0 });
 
   // Cerrar menú al click afuera (seguro)
   useEffect(() => {
@@ -62,6 +67,40 @@ export default function DiagramControls({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  // ===== DRAG HANDLERS =====
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (!toolbarRef.current) return;
+    const rect = toolbarRef.current.getBoundingClientRect();
+    dragOffset.current = {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+    };
+    setIsDragging(true);
+  };
+
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      setPosition({
+        top: e.clientY - dragOffset.current.y,
+        left: e.clientX - dragOffset.current.x + "px",
+      });
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isDragging]);
+
   // Instalar Export una sola vez por graph
   useLayoutEffect(() => {
     if (!graph) return;
@@ -76,13 +115,13 @@ export default function DiagramControls({
     if (typeof document === "undefined") return null;
     return ensureRoot("diagram-toolbar-root", {
       position: "fixed",
-      left: "50%",
-      top: "1rem",
-      transform: "translateX(-50%)",
+      left: position.left as string,
+      top: position.top + "px",
+      transform: typeof position.left === "string" && position.left.includes("%") ? "translateX(-50%)" : "none",
       zIndex: "60",
-      pointerEvents: "none", // el contenedor no captura eventos
+      pointerEvents: "none",
     });
-  }, []);
+  }, [position]);
 
   // ========= MiniMap FUERA de React en raíz persistente =========
   const minimapRoot = useMemo(() => {
@@ -158,7 +197,7 @@ export default function DiagramControls({
       const { default: html2canvas } = await import("html2canvas");
       const container = graph.container as HTMLElement;
       const canvas = await html2canvas(container, {
-        backgroundColor: theme === "dark" ? "#18181b" : "#fafafa",
+        background: theme === "dark" ? "#18181b" : "#fafafa",
         useCORS: true,
         allowTaint: true,
       });
@@ -199,7 +238,7 @@ export default function DiagramControls({
       const { default: jsPDF } = await import("jspdf");
       const container = graph.container as HTMLElement;
       const canvas = await html2canvas(container, {
-        backgroundColor: theme === "dark" ? "#18181b" : "#fafafa",
+        background: theme === "dark" ? "#18181b" : "#fafafa",
         useCORS: true,
         allowTaint: true,
       });
@@ -266,114 +305,140 @@ export default function DiagramControls({
   // ===== Toolbar UI (portal) =====
   const toolbar = (
     <div
+      ref={toolbarRef}
       role="toolbar"
       key="diagram-toolbar"
-      style={{ pointerEvents: "auto" }} // reactivamos eventos en el hijo
-      className="card glass flex items-center gap-1 p-1.5"
+      style={{ 
+        pointerEvents: "auto",
+        cursor: isDragging ? "grabbing" : "grab"
+      }}
+      className="card glass flex flex-col gap-1 p-1.5"
     >
-        {/* Cursor */}
+      {/* Header con botón de minimizar/maximizar */}
+      <div 
+        className="flex items-center justify-between px-2 py-1 border-b border-surface-200 dark:border-surface-700"
+        onMouseDown={handleMouseDown}
+      >
+        <span className="text-xs font-medium text-surface-600 dark:text-surface-400">
+          Herramientas
+        </span>
         <button
-          onClick={() => onToolClick("cursor")}
-          disabled={toolbarDisabled}
-          className={`btn-ghost !rounded-lg !px-3 !py-2 ${tool === "cursor" ? "!bg-surface-200 dark:!bg-surface-700" : ""}`}
-          title="Cursor"
+          onClick={() => setIsCollapsed(!isCollapsed)}
+          className="btn-ghost !p-1 !rounded"
+          title={isCollapsed ? "Expandir" : "Minimizar"}
         >
-          <IconCursor className="mr-1 inline h-4 w-4" />
-          Cursor
+          {isCollapsed ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
         </button>
+      </div>
 
-        <span className="mx-1 h-6 w-px bg-surface-200 dark:bg-surface-700" />
-
-        {/* Zoom */}
-        <button
-          onClick={zoomOut}
-          disabled={toolbarDisabled}
-          title="Zoom out"
-          className="btn-ghost !rounded-lg !p-2"
-        >
-          <IconZoomOut className="h-5 w-5" />
-        </button>
-        <button
-          onClick={zoomIn}
-          disabled={toolbarDisabled}
-          title="Zoom in"
-          className="btn-ghost !rounded-lg !p-2"
-        >
-          <IconZoomIn className="h-5 w-5" />
-        </button>
-        <button
-          onClick={center}
-          disabled={toolbarDisabled}
-          title="Center"
-          className="btn-ghost !rounded-lg !p-2"
-        >
-          <IconCenter className="h-5 w-5" />
-        </button>
-
-        {/* Guardar */}
-        {onSave && (
-          <>
-            <span className="mx-1 h-6 w-px bg-surface-200 dark:bg-surface-700" />
-            <button
-              onClick={handleSave}
-              disabled={toolbarDisabled}
-              title="Guardar diagrama"
-              className="btn-ghost !rounded-lg !p-2"
-            >
-              <Save className="h-5 w-5" />
-            </button>
-          </>
-        )}
-
-        <span className="mx-1 h-6 w-px bg-surface-200 dark:bg-surface-700" />
-
-        {/* Exportar */}
-        <div className="relative" ref={exportMenuRef}>
+      {/* Contenido colapsable */}
+      {!isCollapsed && (
+        <div className="flex items-center gap-1">
+          {/* Cursor */}
           <button
-            onClick={() => setShowExportMenu((v) => !v)}
+            onClick={() => onToolClick("cursor")}
             disabled={toolbarDisabled}
-            className="btn-ghost !rounded-lg !px-3 !py-2"
+            className={`btn-ghost !rounded-lg !px-3 !py-2 ${tool === "cursor" ? "!bg-surface-200 dark:!bg-surface-700" : ""}`}
+            title="Cursor"
           >
-            <Download className="h-4 w-4" />
-            Exportar
-            <ChevronDown className="h-3 w-3 ml-1" />
+            <IconCursor className="mr-1 inline h-4 w-4" />
+            Cursor
           </button>
 
-          {showExportMenu && !toolbarDisabled && (
-            <div className="absolute top-full mt-1 right-0 card glass p-1 min-w-[160px] z-20">
-              <button
-                onClick={exportPNG}
-                className="w-full text-left rounded-md px-3 py-2 text-sm text-surface-700 dark:text-surface-200 hover:bg-surface-100 dark:hover:bg-surface-800 flex items-center gap-2"
-              >
-                <span aria-hidden>🖼️</span>
-                Exportar PNG
-              </button>
-              <button
-                onClick={exportPDF}
-                className="w-full text-left rounded-md px-3 py-2 text-sm text-surface-700 dark:text-surface-200 hover:bg-surface-100 dark:hover:bg-surface-800 flex items-center gap-2"
-              >
-                <span aria-hidden>📄</span>
-                Exportar PDF
-              </button>
-            </div>
-          )}
-        </div>
+          <span className="mx-1 h-6 w-px bg-surface-200 dark:bg-surface-700" />
 
-        {/* Compartir */}
-        {onGetShareLink && (
-          <>
-            <span className="mx-1 h-6 w-px bg-surface-200 dark:bg-surface-700" />
+          {/* Zoom */}
+          <button
+            onClick={zoomOut}
+            disabled={toolbarDisabled}
+            title="Zoom out"
+            className="btn-ghost !rounded-lg !p-2"
+          >
+            <IconZoomOut className="h-5 w-5" />
+          </button>
+          <button
+            onClick={zoomIn}
+            disabled={toolbarDisabled}
+            title="Zoom in"
+            className="btn-ghost !rounded-lg !p-2"
+          >
+            <IconZoomIn className="h-5 w-5" />
+          </button>
+          <button
+            onClick={center}
+            disabled={toolbarDisabled}
+            title="Center"
+            className="btn-ghost !rounded-lg !p-2"
+          >
+            <IconCenter className="h-5 w-5" />
+          </button>
+
+          {/* Guardar */}
+          {onSave && (
+            <>
+              <span className="mx-1 h-6 w-px bg-surface-200 dark:bg-surface-700" />
+              <button
+                onClick={handleSave}
+                disabled={toolbarDisabled}
+                title="Guardar diagrama"
+                className="btn-ghost !rounded-lg !p-2"
+              >
+                <Save className="h-5 w-5" />
+              </button>
+            </>
+          )}
+
+          <span className="mx-1 h-6 w-px bg-surface-200 dark:bg-surface-700" />
+
+          {/* Exportar */}
+          <div className="relative" ref={exportMenuRef}>
             <button
-              onClick={handleShare}
-              disabled={sharing}
-              title="Compartir enlace del proyecto"
+              onClick={() => setShowExportMenu((v) => !v)}
+              disabled={toolbarDisabled}
               className="btn-ghost !rounded-lg !px-3 !py-2"
             >
-              <Share2 className="h-5 w-5 mr-1" />
-              {sharing ? "Generando..." : "Compartir"}
+              <Download className="h-4 w-4" />
+              Exportar
+              <ChevronDown className="h-3 w-3 ml-1" />
             </button>
-          </>
-        )}
+
+            {showExportMenu && !toolbarDisabled && (
+              <div className="absolute top-full mt-1 right-0 card glass p-1 min-w-[160px] z-20">
+                <button
+                  onClick={exportPNG}
+                  className="w-full text-left rounded-md px-3 py-2 text-sm text-surface-700 dark:text-surface-200 hover:bg-surface-100 dark:hover:bg-surface-800 flex items-center gap-2"
+                >
+                  <span aria-hidden>🖼️</span>
+                  Exportar PNG
+                </button>
+                <button
+                  onClick={exportPDF}
+                  className="w-full text-left rounded-md px-3 py-2 text-sm text-surface-700 dark:text-surface-200 hover:bg-surface-100 dark:hover:bg-surface-800 flex items-center gap-2"
+                >
+                  <span aria-hidden>📄</span>
+                  Exportar PDF
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Compartir */}
+          {onGetShareLink && (
+            <>
+              <span className="mx-1 h-6 w-px bg-surface-200 dark:bg-surface-700" />
+              <button
+                onClick={handleShare}
+                disabled={sharing}
+                title="Compartir enlace del proyecto"
+                className="btn-ghost !rounded-lg !px-3 !py-2"
+              >
+                <Share2 className="h-5 w-5 mr-1" />
+                {sharing ? "Generando..." : "Compartir"}
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 

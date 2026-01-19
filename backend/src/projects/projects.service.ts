@@ -264,6 +264,42 @@ export class ProjectsService {
     return true;
   }
 
+  /**
+   * Obtiene todas las solicitudes pendientes para proyectos donde el usuario es owner
+   */
+  async getPendingRequestsForOwner(ownerId: string) {
+    const requests = await this.prisma.editRequest.findMany({
+      where: {
+        status: 'PENDING',
+        project: { ownerId },
+      },
+      select: {
+        id: true,
+        projectId: true,
+        requesterId: true,
+        message: true,
+        createdAt: true,
+        requester: {
+          select: { name: true, email: true },
+        },
+        project: {
+          select: { name: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return requests.map((r) => ({
+      requestId: r.id,
+      projectId: r.projectId,
+      projectName: r.project.name,
+      requesterId: r.requesterId,
+      requesterName: r.requester.name || r.requester.email,
+      message: r.message,
+      createdAt: r.createdAt,
+    }));
+  }
+
   /* =========================================================
    * Eliminar proyecto (solo OWNER)
    * Se elimina en cascada gracias a las reglas de Prisma
