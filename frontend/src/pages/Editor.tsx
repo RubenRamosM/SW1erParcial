@@ -8,6 +8,7 @@ import { Toaster, toast } from "react-hot-toast";
 import { api } from "../lib/api";
 import { getAuthToken, applyAxiosAuthHeader } from "../lib/auth";
 import { useAuth } from "../state/AuthContext";
+import { useTheme } from "../state/ThemeContext";
 
 import { registerShapesOnce } from "../uml/shapes";
 import Sidebar from "../uml/ui/Sidebar";
@@ -465,6 +466,7 @@ export default function Editor() {
   const shareToken = new URLSearchParams(location.search).get("share");
 
   const { user, token } = useAuth();
+  const { theme: _theme } = useTheme();
   const effectiveToken = useMemo(() => getAuthToken(token), [token]);
   useEffect(() => applyAxiosAuthHeader(effectiveToken), [effectiveToken]);
 
@@ -929,10 +931,11 @@ export default function Editor() {
     const b64 = btoa(json);
     const version = Date.now();
 
-    const map = ydoc.getMap<any>("diagram");
+    // Actualizar el mapa "diagram" que el frontend usa para render
+    const diagramMap = ydoc.getMap<any>("diagram");
     Y.transact(ydoc, () => {
-      map.set("snapshotBase64", b64);
-      map.set("version", version);
+      diagramMap.set("snapshotBase64", b64);
+      diagramMap.set("version", version);
     });
 
     lastEmittedVersionRef.current = version;
@@ -1121,12 +1124,12 @@ export default function Editor() {
 
     const graph = new Graph({
       container: containerRef.current,
-      background: { color: "#ffffff" },
+      background: { color: _theme === "dark" ? "#18181b" : "#fafafa" },
       grid: {
         visible: true,
         size: 10,
         type: "dot",
-        args: { color: "#e5e7eb" },
+        args: { color: _theme === "dark" ? "#27272a" : "#e4e4e7" },
       },
       panning: true,
       mousewheel: { enabled: true, modifiers: ["ctrl"] },
@@ -1422,7 +1425,7 @@ export default function Editor() {
       graph.dispose();
       setGraphReady(false);
     };
-  }, [isReadonly]);
+  }, [isReadonly, _theme]);
 
   function isValidRouterType(type: any): type is RouterType {
     return ["manhattan", "normal", "oneSide", "er"].includes(type);
@@ -1536,6 +1539,133 @@ export default function Editor() {
             applyEdgeLabels(e);
             reassignEdgePorts(e, routerType, connectorType);
           });
+
+          // Verificar si hay clases pendientes de importar desde el Dashboard
+          try {
+            const pendingKey = `pendingImport_${pid}`;
+            const pendingData = localStorage.getItem(pendingKey);
+            if (pendingData) {
+              const { classes, relations } = JSON.parse(pendingData);
+
+              // Si el grafo ya tiene nodos, significa que ya se importó/guardó correctamente
+              // En ese caso, solo limpiar localStorage y no duplicar
+              const existingNodes = graphRef.current?.getNodes() || [];
+              if (existingNodes.length > 0) {
+                localStorage.removeItem(pendingKey);
+                console.log("[Editor] Diagrama ya cargado del servidor, limpiando localStorage pendiente");
+              } else if (graphRef.current && classes?.length > 0) {
+                // Crear las clases solo si el grafo está vacío
+                const g = graphRef.current;
+
+                // Crear cada clase
+                const createdNodes: Map<string, any> = new Map();
+                (classes || []).forEach((cls: any, idx: number) => {
+                  const cols = 3;
+                  const row = Math.floor(idx / cols);
+                  const col = idx % cols;
+                  const spacing = 250;
+                  const startX = 200;
+                  const startY = 150;
+                  const x = startX + col * spacing;
+                  const y = startY + row * spacing;
+
+                  const node = g.addNode({
+                    shape: "uml-class",
+                    x,
+                    y,
+                    width: (CLASS_SIZES as any).WIDTH,
+                    height: (CLASS_SIZES as any).HEIGHT,
+                    attrs: {
+                      name: { text: cls.name || "Class" },
+                      attrs: { text: (cls.attributes || []).join("\n") },
+                      methods: { text: (cls.methods || []).join("\n") },
+                    },
+                    zIndex: 2,
+                    data: {
+                      name: cls.name || "Class",
+                      attributes: cls.attributes || [],
+                      methods: cls.methods || []
+                    },
+                  }) as any;
+                  resizeUmlClass(node);
+                  createdNodes.set(cls.name, node);
+                });
+
+                // Crear relaciones después de las clases
+                (relations || []).forEach((rel: any) => {
+                  const sourceNode = createdNodes.get(rel.from) ||
+                    g.getNodes().find((n: any) => n.getData()?.name === rel.from);
+                  const targetNode = createdNodes.get(rel.to) ||
+                    g.getNodes().find((n: any) => n.getData()?.name === rel.to);
+
+                  if (!sourceNode || !targetNode) return;
+
+                  const normalizedType = (rel.type || "assoc").toLowerCase();
+                  const typeMapping: Record<string, EdgeKind> = {
+                    assoc: "assoc", inherit: "inherit", comp: "comp",
+                    aggr: "aggr", dep: "dep", "many-to-many": "many-to-many", nav: "nav",
+                  };
+                  const edgeKind: EdgeKind = typeMapping[normalizedType] || "assoc";
+                  const edgeStyle = EDGE_STYLE[edgeKind] || EDGE_STYLE.assoc;
+
+                  const sc = sourceNode.getBBox().center;
+                  const tc = targetNode.getBBox().center;
+                  const sourceSide = pickSide(sc, tc);
+                  const targetSide = opposite(sourceSide);
+                  const sourcePort = allocPortPreferMiddle(sourceNode.id, sourceSide);
+                  const targetPort = allocPortPreferMiddle(targetNode.id, targetSide);
+
+                  const edge = g.addEdge({
+                    attrs: {
+                      line: {
+                        stroke: edgeStyle.stroke ?? "#374151",
+                        strokeWidth: edgeStyle.strokeWidth ?? 1.5,
+                        strokeDasharray: edgeStyle.dashed ? 4 : undefined,
+                        sourceMarker: edgeStyle.sourceMarker ?? null,
+                        targetMarker: edgeStyle.targetMarker ?? null,
+                      },
+                    },
+                    zIndex: 1000,
+                    router: ROUTER_CONFIG.orth,
+                    connector: CONNECTOR_CONFIG.rounded,
+                    source: { cell: sourceNode.id, port: sourcePort },
+                    target: { cell: targetNode.id, port: targetPort },
+                    data: {
+                      name: rel.name || "",
+                      multSource: rel.multiplicity?.source || "",
+                      multTarget: rel.multiplicity?.target || "",
+                      type: edgeKind,
+                      routerType: "orth",
+                      connectorType: "rounded",
+                    },
+                  });
+                  applyEdgeLabels(edge);
+                });
+
+                // Centrar vista
+                g.centerContent();
+                g.zoomToFit({ padding: 50, maxScale: 1 });
+
+                // Guardar INMEDIATAMENTE al servidor y LUEGO limpiar localStorage
+                try {
+                  const snap = toSnapshot(g);
+                  await api.put(`/projects/${pid}/diagram`, {
+                    nodes: snap.nodes,
+                    edges: snap.edges,
+                    updatedAt: new Date().toISOString(),
+                  });
+                  // Solo limpiar localStorage después del guardado exitoso
+                  localStorage.removeItem(pendingKey);
+                  console.log(`[Editor] Diagrama importado y guardado: ${classes?.length || 0} clases, ${relations?.length || 0} relaciones`);
+                } catch (saveErr) {
+                  console.error("[Editor] Error al guardar diagrama importado:", saveErr);
+                  // NO limpiar localStorage si falla el guardado - se reintentará al recargar
+                }
+              }
+            }
+          } catch (importErr) {
+            console.error("[Editor] Error al importar clases pendientes:", importErr);
+          }
         }
       } catch (e: any) {
         setError(
@@ -1833,7 +1963,7 @@ export default function Editor() {
   }
 
   return (
-    <div className="flex h-screen bg-white">
+    <div className="flex h-screen bg-surface-50 dark:bg-surface-950 transition-colors duration-300">
       <Sidebar
         tool={tool}
         onToolClick={onToolClick}
@@ -1894,16 +2024,16 @@ export default function Editor() {
         </div>
 
         {isReadonly && (
-          <div className="absolute top-3 left-3 z-20 rounded bg-amber-50 border border-amber-200 px-3 py-1 text-amber-700 text-sm">
+          <div className="absolute top-3 left-3 z-20 rounded-xl bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 px-4 py-2 text-amber-700 dark:text-amber-300 text-sm font-medium shadow-sm">
             Vista pública / solo lectura
           </div>
         )}
 
         {/* Aviso de aprobación */}
         {approvalNoticeVisible && (
-          <div className="absolute top-3 right-3 z-30 max-w-md rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-green-800 shadow">
-            <div className="font-medium">Solicitud aceptada</div>
-            <div className="mt-1 text-sm">
+          <div className="absolute top-3 right-3 z-30 max-w-md rounded-xl border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/30 px-4 py-3 text-emerald-800 dark:text-emerald-300 shadow-lg animate-slide-down">
+            <div className="font-semibold">Solicitud aceptada</div>
+            <div className="mt-1 text-sm opacity-90">
               El anfitrión aceptó tu solicitud. Ya podés editar.
             </div>
           </div>
@@ -1911,11 +2041,11 @@ export default function Editor() {
 
         {/* Banner de solicitud (cuando hay sesión y es solo lectura) */}
         {user && isReadonly && (
-          <div className="absolute top-3 right-3 z-20 max-w-md rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-amber-800 shadow">
-            <div className="font-medium">
+          <div className="absolute top-3 right-3 z-20 max-w-md rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/30 px-4 py-3 text-amber-800 dark:text-amber-300 shadow-lg">
+            <div className="font-semibold">
               {requestApproved ? "Solicitud aceptada" : "Solo lectura"}
             </div>
-            <div className="mt-1 text-sm">
+            <div className="mt-1 text-sm opacity-90">
               {requestApproved
                 ? "El anfitrión aceptó tu solicitud. El editor se habilitará automáticamente."
                 : "Para editar este diagrama necesitás permiso del anfitrión."}
@@ -1924,7 +2054,7 @@ export default function Editor() {
             {!requestApproved && (
               <button
                 onClick={handleSendEditRequest}
-                className="mt-2 rounded-md bg-amber-600 px-3 py-1.5 text-white hover:bg-amber-700 disabled:opacity-60"
+                className="mt-3 rounded-lg bg-amber-600 dark:bg-amber-500 px-4 py-2 text-sm font-medium text-white hover:bg-amber-700 dark:hover:bg-amber-600 disabled:opacity-60 transition-colors"
                 disabled={requestSent}
               >
                 {requestSent
@@ -1937,22 +2067,22 @@ export default function Editor() {
 
         {/* Banner cuando no hay sesión */}
         {!user && isReadonly && (
-          <div className="absolute top-3 right-3 z-20 max-w-md rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-blue-800 shadow">
-            <div className="font-medium">¿Querés editar este diagrama?</div>
-            <div className="mt-1 text-sm">
+          <div className="absolute top-3 right-3 z-20 max-w-md rounded-xl border border-primary-200 dark:border-primary-800 bg-primary-50 dark:bg-primary-900/30 px-4 py-3 text-primary-800 dark:text-primary-300 shadow-lg">
+            <div className="font-semibold">¿Querés editar este diagrama?</div>
+            <div className="mt-1 text-sm opacity-90">
               Creá una cuenta o iniciá sesión para poder enviar una solicitud de
               edición al anfitrión.
             </div>
-            <div className="mt-2 flex gap-2">
+            <div className="mt-3 flex gap-2">
               <button
                 onClick={goToRegister}
-                className="rounded-md bg-blue-600 px-3 py-1.5 text-white hover:bg-blue-700"
+                className="btn-primary !py-2 !px-4 !text-sm"
               >
                 Crear cuenta
               </button>
               <button
                 onClick={goToLogin}
-                className="rounded-md border border-blue-600 px-3 py-1.5 text-blue-700 hover:bg-blue-100"
+                className="btn-secondary !py-2 !px-4 !text-sm"
               >
                 Iniciar sesión
               </button>
@@ -1978,39 +2108,51 @@ export default function Editor() {
                 }
               : async () => window.location.href
           }
+          theme={_theme}
         />
 
         {loading && (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/40">
-            <div className="rounded-xl bg-white px-4 py-2 text-sm text-gray-700 shadow">
-              Cargando diagrama…
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-white/60 dark:bg-surface-950/60 backdrop-blur-sm">
+            <div className="card glass px-6 py-4 flex items-center gap-3 shadow-lg">
+              <svg className="animate-spin h-5 w-5 text-primary-600 dark:text-primary-400" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+              </svg>
+              <span className="text-sm font-medium text-surface-700 dark:text-surface-300">Cargando diagrama…</span>
             </div>
           </div>
         )}
         {error && (
-          <div className="absolute left-4 top-4 z-20 rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700 shadow">
+          <div className="absolute left-4 top-4 z-20 rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/30 px-4 py-3 text-sm text-red-700 dark:text-red-300 shadow-lg">
             {error}
           </div>
         )}
 
         {!isReadonly && menu.visible && menu.id && (
           <div
-            className="fixed z-50 w-44 rounded-lg border border-gray-200 bg-white/95 shadow-xl backdrop-blur"
+            className="fixed z-50 w-48 rounded-xl border border-surface-200 dark:border-surface-700 bg-white/80 dark:bg-surface-900/80 shadow-2xl backdrop-blur-lg animate-scale-in p-1"
             style={{ top: menu.y, left: menu.x }}
             onMouseLeave={() =>
               setMenu((m) => ({ ...m, visible: false, kind: null, id: null }))
             }
           >
             <button
-              className="block w-full px-3 py-2 text-left text-sm text-gray-800 hover:bg-gray-50"
+              className="flex w-full items-center gap-3 px-3 py-2 text-left text-sm text-surface-700 dark:text-surface-200 hover:bg-surface-100 dark:hover:bg-surface-800 rounded-lg transition-colors"
               onClick={handleEdit}
             >
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
               Editar {menu.kind === "edge" ? "relación" : "clase"}
             </button>
+            <div className="h-px w-full bg-surface-200 dark:bg-surface-700 my-1" />
             <button
-              className="block w-full px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+              className="flex w-full items-center gap-3 px-3 py-2 text-left text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-colors"
               onClick={handleDelete}
             >
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
               Eliminar {menu.kind === "edge" ? "relación" : "clase"}
             </button>
           </div>
@@ -2067,15 +2209,15 @@ export default function Editor() {
       <Toaster
         position="bottom-right"
         toastOptions={{
+          className: "card glass shadow-lg text-surface-800 dark:text-surface-200",
           duration: 4000,
-          style: { background: "#363636", color: "#fff" },
           success: {
             duration: 3000,
-            iconTheme: { primary: "#4ade80", secondary: "#fff" },
+            iconTheme: { primary: "#10b981", secondary: "#ffffff" },
           },
           error: {
             duration: 4000,
-            iconTheme: { primary: "#ef4444", secondary: "#fff" },
+            iconTheme: { primary: "#ef4444", secondary: "#ffffff" },
           },
         }}
       />

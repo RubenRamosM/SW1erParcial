@@ -105,6 +105,7 @@ export class DiagramScannerService {
 
   /**
    * Crea múltiples versiones procesadas de la imagen para OCR robusto
+   * MEJORADO: Ahora detecta cajas de clases y las procesa por separado
    */
   private async createProcessedVersions(
     imageBuffer: Buffer,
@@ -146,35 +147,63 @@ export class DiagramScannerService {
       .toBuffer();
     versions.push(version3);
 
-    console.log('[DiagramScanner] ✅ Generadas 3 versiones optimizadas');
+    // VERSIÓN 4: NUEVA - Enfoque en líneas/bordes para detectar cajas
+    // Esto ayuda a encontrar dónde están los rectángulos (límites de clases)
+    try {
+      const version4 = await sharp(imageBuffer)
+        .resize(3000, null, { fit: 'inside', kernel: sharp.kernel.lanczos3 })
+        .greyscale()
+        .normalize()
+        .threshold(100, { greyscale: false })
+        .sharpen({ sigma: 3, m1: 2, m2: 0.3 }) // Más nitidez para líneas
+        .png({ compressionLevel: 0 })
+        .toBuffer();
+      versions.push(version4);
+      console.log('[DiagramScanner] ✅ Generadas 4 versiones optimizadas');
+    } catch (e) {
+      console.warn('[DiagramScanner] ⚠️ Error en versión 4, continuando con 3');
+      console.log('[DiagramScanner] ✅ Generadas 3 versiones optimizadas');
+    }
+
     return versions;
   }
 
   /**
    * Ejecuta OCR con múltiples configuraciones y combina resultados
+   * MEJORADO: Mejores parámetros de Tesseract para diagrama UML
    */
   private async performMultiPassOCR(imageBuffers: Buffer[]): Promise<string[]> {
     const results: string[] = [];
 
-    // Configuraciones de Tesseract para diferentes escenarios
+    // Configuraciones de Tesseract optimizadas para UML
+    // PSM (Page Segmentation Mode):
+    // 1 = Auto + OSD, 3 = Auto, 6 = Uniform block, 11 = Sparse text, 13 = Raw line
     const configs = [
       {
         psm: 3, // Automatic page segmentation
         desc: 'Segmentación automática',
+        oem: 1, // Use legacy OCR
       },
       {
-        psm: 6, // Uniform block of text
-        desc: 'Bloques uniformes',
+        psm: 6, // Uniform block of text - MEJOR para cajas UML
+        desc: 'Bloques uniformes (óptimo para clases)',
+        oem: 1,
       },
       {
         psm: 11, // Sparse text
         desc: 'Texto disperso',
+        oem: 1,
+      },
+      {
+        psm: 13, // Raw line - para líneas individuales
+        desc: 'Líneas crudas',
+        oem: 1,
       },
     ];
 
-    for (let i = 0; i < imageBuffers.length; i++) {
+    for (let i = 0; i < Math.min(imageBuffers.length, configs.length); i++) {
       const buffer = imageBuffers[i];
-      const config = configs[i % configs.length];
+      const config = configs[i];
 
       try {
         console.log(`[OCR] Pasada ${i + 1}: ${config.desc}...`);
@@ -192,11 +221,15 @@ export class DiagramScannerService {
 
         await worker.setParameters({
           tessedit_pageseg_mode: config.psm as any,
+          tessedit_ocr_engine_mode: config.oem as any,
+          // Caracteres permitidos - incluye símbolos UML y tipos comunes
           tessedit_char_whitelist:
             'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz' +
             'áéíóúÁÉÍÓÚñÑ' +
             '0123456789' +
-            '(){}[]<>:;,.-+*_=!@#$%^&|\\/"\'`~? \n\t',
+            '(){}[]<>:;,.-+*_=!@#$%^&|\\/"\'`~? \n\t' +
+            'boolean int float double String long short byte char void ' +
+            'public private protected static final abstract interface class extends implements',
           preserve_interword_spaces: '1' as any,
           tessedit_do_invert: '0' as any,
         });
@@ -207,7 +240,7 @@ export class DiagramScannerService {
         await worker.terminate();
 
         const cleaned = this.advancedCleanOCRText(text);
-        if (cleaned && cleaned.length > 20) {
+        if (cleaned && cleaned.length > 15) {
           results.push(cleaned);
           console.log(
             `[OCR] ✅ Pasada ${i + 1} completada: ${cleaned.length} caracteres`,
@@ -228,7 +261,7 @@ export class DiagramScannerService {
 
   /**
    * Fusiona resultados de múltiples pasadas de OCR
-   * Prioriza la pasada con mejor calidad y complementa con otras
+   * MEJORADO: Usa mejor heurística para combinación inteligente
    */
   private mergeOCRResults(results: string[]): string {
     if (results.length === 0) return '';
@@ -240,45 +273,70 @@ export class DiagramScannerService {
 
     // Detectar líneas únicas en otras pasadas y agregarlas
     const baseLines = new Set(
-      mergedText.split('\n').map((l) => l.trim().toLowerCase()),
+      mergedText
+        .split('\n')
+        .map((l) => l.trim().toLowerCase())
+        .filter((l) => l),
+    );
+
+    console.log(
+      `[OCR-Merge] Líneas base detectadas: ${baseLines.size} líneas únicas`,
     );
 
     for (let i = 1; i < results.length; i++) {
       const lines = results[i].split('\n');
+      let addedFromThisPass = 0;
+
       for (const line of lines) {
         const normalized = line.trim().toLowerCase();
         // Si es una línea significativa que no está en la base, agregarla
-        if (normalized.length > 3 && !baseLines.has(normalized)) {
+        if (normalized.length > 2 && !baseLines.has(normalized)) {
           // Verificar si contiene información valiosa (atributos, métodos, clases)
           if (this.looksLikeUMLContent(line)) {
             mergedText += '\n' + line.trim();
             baseLines.add(normalized);
+            addedFromThisPass++;
           }
         }
       }
+
+      console.log(
+        `[OCR-Merge] Pasada ${i + 1}: Agregadas ${addedFromThisPass} líneas nuevas`,
+      );
     }
 
-    return this.advancedCleanOCRText(mergedText);
+    const cleaned = this.advancedCleanOCRText(mergedText);
+    console.log(
+      `[OCR-Merge] Texto final mergeado: ${cleaned.length} caracteres`,
+    );
+    return cleaned;
   }
 
   /**
    * Determina si una línea parece contener información UML valiosa
+   * MEJORADO: Detecta más patrones de atributos y métodos
    */
   private looksLikeUMLContent(line: string): boolean {
     const trimmed = line.trim();
+
+    // Patrones de UML:
     return (
-      /^[+\-#~]/.test(trimmed) || // Modificadores de visibilidad
-      /\w+\s*\(.*\)/.test(trimmed) || // Métodos
-      /\w+\s*:\s*\w+/.test(trimmed) || // Atributos con tipo
-      /^[A-Z][a-zA-Z0-9_]*$/.test(trimmed) || // Nombres de clase
-      /\d+\.\.\*|\*\.\.1|1\.\.1|0\.\.1/.test(trimmed) || // Cardinalidades
-      // Detecta variantes con más puntos o letras (ej. '1...m', '1...N')
-      /1\.{2,}\s*[mMnN\*]?|0\.{2,}\s*[mMnN\*]?/.test(trimmed)
+      /^[+\-#~]/.test(trimmed) || // Modificadores de visibilidad (atributos/métodos)
+      /\w+\s*\(.*\)/.test(trimmed) || // Métodos con paréntesis
+      /\w+\s*:\s*\w+/.test(trimmed) || // Atributos con tipo (name: type)
+      /^[A-Z][a-zA-Z0-9_]*$/.test(trimmed) || // Nombres de clase (PascalCase)
+      /\d+\.\.\*|\*\.\.1|1\.\.1|0\.\.1/.test(trimmed) || // Cardinalidades estándar
+      /1\.{2,}\s*[mMnN\*]?|0\.{2,}\s*[mMnN\*]?/.test(trimmed) || // Cardinalidades con variantes
+      // Palabras clave de relación
+      /\b(hereda|implementa|tiene|posee|contiene|agrega|depende|es\s+un|se\s+inscribe)\b/i.test(
+        trimmed,
+      )
     );
   }
 
   /**
    * Limpieza avanzada de texto OCR con correcciones contextuales
+   * MEJORADO: Mejor detección de atributos y métodos en UML
    */
   private advancedCleanOCRText(text: string): string {
     return (
@@ -287,46 +345,56 @@ export class DiagramScannerService {
         .replace(/\r\n/g, '\n')
         .replace(/\r/g, '\n')
 
+        // Corregir espacios después de modificadores (+ - # ~)
+        // Estos espacios pueden romper la estructura UML
+        .replace(/([+\-#~])\s+/g, '$1') // "+id" no "+ id"
+
+        // Corregir dos puntos para tipos
+        .replace(/\s*:\s*/g, ':')
+        // Normalizar espacio después de tipos
+        .replace(/:\s*([a-zA-Z0-9])/g, ': $1')
+
+        // Corregir paréntesis de métodos
+        .replace(/\(\s+/g, '(')
+        .replace(/\s+\)/g, ')')
+        .replace(/\s+\(/g, '(')
+
         // Corregir modificadores de visibilidad mal reconocidos
         .replace(/[|Il1!¡]+\s*([+\-#~])/g, '$1')
         .replace(/^[|Il1!¡]+([+\-#~])/gm, '$1')
 
-        // Corregir confusiones comunes OCR
-        .replace(/\b0\s*\.\s*\.\s*\*/g, '0..*') // "0 . . *" → "0..*"
+        // Corregir confusiones comunes OCR para cardinalidades
+        .replace(/\b0\s*\.\s*\.\s*\*/g, '0..*')
         .replace(/\b1\s*\.\s*\.\s*\*/g, '1..*')
         .replace(/\b1\s*\.\s*\.\s*1/g, '1..1')
         .replace(/\*\s*\.\s*\.\s*1/g, '*..1')
-        // Normalizar variantes comunes: '1...m', '1...N', '1..n' => '1..*'
         .replace(/\b1\.{2,}\s*[mMnN]\b/g, '1..*')
         .replace(/\b0\.{2,}\s*[mMnN]\b/g, '0..*')
-        // variantes con espacios entre puntos o caracteres raros
         .replace(/\b1\s*\.\s*\.\s*\.?\s*[mMnN]\b/g, '1..*')
         .replace(/\b0\s*\.\s*\.\s*\.?\s*[mMnN]\b/g, '0..*')
-        // convertir tres o más puntos a dos (para normalizar '...' → '..')
         .replace(/\.{3,}/g, '..')
 
-        // Corregir paréntesis
-        .replace(/\(\s+/g, '(')
-        .replace(/\s+\)/g, ')')
+        // Corregir confusión entre números y letras que aparecen en atributos
+        // Algunos OCRs confunden 'I' con '1', 'O' con '0', etc
+        .replace(/\+0id:/g, '+id:') // Evitar "0id:" cuando debería ser "id:"
+        .replace(/\+1id:/g, '+id:')
+
+        // Corregir brackets
         .replace(/\[\s+/g, '[')
         .replace(/\s+\]/g, ']')
-
-        // Corregir dos puntos (tipos)
-        .replace(/\s*:\s*/g, ': ')
-        .replace(/:\s+([,\)])/g, ':$1')
-
-        // Corregir espacios en modificadores
-        .replace(/([+\-#~])\s+([a-zA-Z])/g, '$1$2')
-
-        // Limpiar caracteres raros al inicio de líneas
-        .replace(/^[^\w+\-#~\n]+/gm, '')
 
         // Normalizar espacios múltiples
         .replace(/ {2,}/g, ' ')
 
-        // Limpiar líneas
+        // Limpiar líneas individuales
         .split('\n')
-        .map((line) => line.trim())
+        .map((line) => {
+          // Limpiar caracteres raros al inicio
+          line = line.replace(/^[^\w+\-#~\n]*/, '');
+          // Limpiar caracteres raros al final
+          line = line.replace(/[^\w+\-#~\)\]\n]*$/, '');
+          return line.trim();
+        })
         .filter((line) => line.length > 0)
         .join('\n')
 
@@ -338,108 +406,123 @@ export class DiagramScannerService {
 
   /**
    * Analiza el texto con Groq usando prompts ultra-específicos
+   * MEJORADO: Prompts más precisos para detectar atributos de clases
    */
   private async analyzeWithGroq(extractedText: string): Promise<any> {
     const systemPrompt = `Eres un experto analista de diagramas UML de clases. Tu misión es interpretar texto extraído por OCR y reconstruir el diagrama con MÁXIMA PRECISIÓN.
 
-**ESTRUCTURA DE UN DIAGRAMA UML:**
-Las clases tienen 3 secciones:
-1. NOMBRE (primera línea): "Alumno", "Materia", "Docente"
-2. ATRIBUTOS (con ":" pero SIN paréntesis): "+id: int", "+nombre: String"
-3. MÉTODOS (con paréntesis): "+inscribir()", "+getNombre(): String"
+IMPORTANTE: El OCR a menudo extrae texto de manera incompleta o con errores. Tu trabajo es INTERPRETAR el contenido y reconstruirlo correctamente.
 
-**REGLAS PARA IDENTIFICAR CLASES:**
-✓ Nombres con mayúscula inicial: "Alumno", "Producto", "Usuario"
-✓ Aparecen al inicio de cada bloque de texto
-✓ NO tienen símbolos +, -, #, ~ delante
-✓ NO tienen paréntesis ni dos puntos
+**ESTRUCTURA FUNDAMENTAL DE UN DIAGRAMA UML:**
+Cada clase tiene 3 secciones separadas por líneas:
+┌─────────────┐
+│ NombreClase │  ← NOMBRE (mayúscula inicial)
+├─────────────┤
+│ +attr1:int  │  ← ATRIBUTOS (con modificador +/-/#/~)
+│ +attr2:str  │
+├─────────────┤
+│ +metodo()   │  ← MÉTODOS (con paréntesis)
+│ +getter()   │
+└─────────────┘
 
-**REGLAS PARA IDENTIFICAR ATRIBUTOS:**
-✓ Formato: "+nombreAtributo: tipo" o "+nombre"
-✓ Tienen modificador: +, -, #, ~
-✓ Tienen dos puntos ":" seguido del tipo
-✓ NO tienen paréntesis "()"
-✓ Ejemplos: "+id: int", "+nombre: String", "-edad: int"
+**PATRONES A DETECTAR:**
 
-**REGLAS PARA IDENTIFICAR MÉTODOS:**
-✓ SIEMPRE tienen paréntesis "()"
-✓ Formato: "+metodo(): tipo" o "+metodo()"
-✓ Tienen modificador: +, -, #, ~
-✓ Ejemplos: "+inscribir()", "+calcular(): int", "+toString(): String"
+1. **CLASES**: 
+   - Línea aislada con SOLO letras/números/_ (sin símbolos especiales)
+   - Primera letra MAYÚSCULA: "Usuario", "Alumno", "Libro"
+   - Marcan inicio de una nueva clase
 
-**TIPOS DE RELACIONES:**
-1. **assoc** (Asociación): "tiene", "posee", "usa", líneas simples
-2. **inherit** (Herencia): "es un", "hereda", flecha vacía
-3. **comp** (Composición): "compone", "contiene", rombo lleno
-4. **aggr** (Agregación): "agrega", rombo vacío
-5. **dep** (Dependencia): "depende", línea punteada
-6. **many-to-many**: relaciones N:M
+2. **ATRIBUTOS** (CRÍTICO - Tu tarea principal):
+   - SIEMPRE empiezan con modificador: +id: int, -nombre: str, #edad: int
+   - Formato: [modificador][nombre]:[tipo]
+   - Ejemplos válidos:
+     * "+id: int"
+     * "+nombre: String"  
+     * "+email: String"
+     * "-saldo: float"
+     * "#edad: int"
+   - El OCR puede haber extraído mal: "1id:int" → "+id:int", "Oname:str" → "+name:str"
+   - Pueden aparecer sin tipos: "+id", "+nombre"
+   - NO confundir con métodos (que tienen paréntesis)
 
-**CARDINALIDADES:**
-- "1" = exactamente uno
-- "*" = muchos (cero o más)
-- "0..1" = cero o uno
-- "1..*" = uno o más
-- "0..*" = cero o más
+3. **MÉTODOS**:
+   - Siempre tienen paréntesis: metodo(), getter(): int
+   - Formato: [modificador][nombre]([params])[:tipoRetorno]
+   - Ejemplos: "+inscribir()", "+calcular(): int", "-toString(): String"
 
-**IMPORTANTE:**
-- Lee TODO el texto primero
-- Agrupa atributos/métodos por clase
-- Extrae TODAS las relaciones entre clases
-- Captura TODAS las cardinalidades
-- NO inventes información
+4. **RELACIONES Y CARDINALIDADES**:
+   - Texto que indica conexiones entre clases
+   - Cardinalidades: "1..*", "0..1", "1..1", "*", "0..*"
+   - Palabras: "hereda", "implementa", "tiene", "posee", "contiene", "agrega"
 
-Responde SOLO en JSON válido sin comentarios ni markdown.`;
+**ESTRATEGIA DE ANÁLISIS:**
 
-    const userPrompt = `Analiza este texto de un diagrama UML. Identifica cada clase con sus atributos, métodos, y TODAS las relaciones con cardinalidades.
+1. Primero, identifica TODAS las clases (nombres aislados con mayúscula)
+2. Para cada clase, agrupa los atributos y métodos que le pertenecen
+3. Reconstruye relaciones desde palabras clave o patrones de texto
+4. Si falta información, usa CONFIANZA BAJA, no inventes
+
+**REGLAS ESPECIALES PARA OCR DEFICIENTE:**
+
+Si ves texto como:
+- "xLibro" → es "Libro" (la 'x' es ruido)
+- "Usuario J" → es "Usuario" (la 'J' es ruido)
+- "1id:int" o "0id:int" → es "+id:int" (OCR confundió + con número)
+- "1inscribir()" → es "+inscribir()" (OCR confundió + con número)
+- Líneas separadas por espacios amplios → pertenecen a clases diferentes
+
+**SALIDA REQUERIDA:**
+JSON válido ÚNICO, sin comentarios, sin markdown. Estructura exacta.`;
+
+    const userPrompt = `Analiza este texto extraído por OCR de un diagrama UML. 
+RECONSTRUYE las clases con TODOS sus atributos, métodos, y relaciones.
+
+El OCR puede haber fallado - tu trabajo es INTERPRETAR y corregir.
 
 ═══════════════════════════════════════════════════════════
-TEXTO EXTRAÍDO DEL DIAGRAMA:
+TEXTO OCR EXTRAÍDO:
 ═══════════════════════════════════════════════════════════
 
 ${extractedText}
 
 ═══════════════════════════════════════════════════════════
 
-**EJEMPLO DE SALIDA ESPERADA:**
+**INSTRUCCIONES FINALES:**
 
-Si el diagrama muestra:
-- Clase "Alumno" con atributos "+id", "+nombre", "+ci"
-- Clase "Materia" con "+id", "+sigla", "+nombre"
-- Relación "Alumno" --inscribe--> "Materia" con "1..*" a "*"
+1. Lee TODO el texto primero
+2. Identifica qué es clase, atributo, método o relación
+3. Si hay texto ambiguo:
+   - ¿Tiene paréntesis? → Es un MÉTODO
+   - ¿Tiene ":" pero no paréntesis? → Es un ATRIBUTO
+   - ¿Es palabra aislada en mayúscula? → Es una CLASE
+4. Agrupa atributos/métodos por clase
+5. Extrae relaciones entre clases
 
-Debes responder:
+**RESPONDE CON ESTE JSON (y SOLO esto):**
 
 {
   "classes": [
     {
-      "name": "Alumno",
-      "attributes": ["+id", "+nombre", "+ci"],
-      "methods": []
-    },
-    {
-      "name": "Materia",
-      "attributes": ["+id", "+sigla", "+nombre"],
-      "methods": []
+      "name": "string (nombre de clase)",
+      "attributes": ["string array con +/-/#/~nombre:tipo"],
+      "methods": ["string array con métodos"]
     }
   ],
   "relations": [
     {
-      "from": "Alumno",
-      "to": "Materia",
-      "type": "assoc",
-      "label": "inscribe",
+      "from": "nombre clase origen",
+      "to": "nombre clase destino",
+      "type": "assoc|inherit|comp|aggr|dep|many-to-many",
+      "label": "string opcional (nombre de relación)",
       "multiplicity": {
-        "source": "1..*",
-        "target": "*"
+        "source": "string opcional (1, *, 1..*, 0..1, etc)",
+        "target": "string opcional"
       }
     }
   ],
-  "description": "Diagrama de inscripción de alumnos a materias",
-  "confidence": "high"
-}
-
-**TU RESPUESTA (JSON PURO):**`;
+  "description": "breve descripción del diagrama",
+  "confidence": "high|medium|low"
+}`;
 
     const completion = await this.groq.chat.completions.create({
       model: 'llama-3.3-70b-versatile',
@@ -448,7 +531,7 @@ Debes responder:
         { role: 'user', content: userPrompt },
       ],
       temperature: 0.05, // Muy bajo para máxima consistencia
-      max_tokens: 6000,
+      max_tokens: 8000, // Aumentado para más contenido
       response_format: { type: 'json_object' },
     });
 

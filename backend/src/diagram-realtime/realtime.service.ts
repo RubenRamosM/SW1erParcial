@@ -178,6 +178,28 @@ export class RealtimeService implements OnModuleInit {
   }
 
   private snapshotFromDoc(doc: Y.Doc, prev: DiagramSnapshot): DiagramSnapshot {
+    // Primero intentar recuperar desde el mapa "diagram" que el frontend actualiza
+    const diagramMap = doc.getMap('diagram');
+    const snapshotBase64 = diagramMap?.get('snapshotBase64');
+    
+    if (typeof snapshotBase64 === 'string' && snapshotBase64.length) {
+      try {
+        const json = Buffer.from(snapshotBase64, 'base64').toString('utf-8');
+        const parsed = JSON.parse(json);
+        if (parsed && Array.isArray(parsed.nodes) && Array.isArray(parsed.edges)) {
+          const fullUpdate = encodeStateAsUpdate(doc);
+          const base64 = toBase64(fullUpdate);
+          return {
+            nodes: parsed.nodes,
+            edges: parsed.edges,
+            updatedAt: new Date().toISOString(),
+            $y: base64,
+          };
+        }
+      } catch {}
+    }
+
+    // Fallback: intentar desde yRoot.nodes/edges (legacy)
     const yRoot = doc.getMap('root');
     const nodes =
       (yRoot.get('nodes') as Y.Array<any>)?.toArray?.() ?? prev.nodes ?? [];

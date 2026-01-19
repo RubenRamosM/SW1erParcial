@@ -17,6 +17,7 @@ type Props = {
   exportName?: string;
   onGetShareLink?: () => Promise<string>;
   canShare?: boolean;
+  theme?: "light" | "dark";
 };
 
 /** Crea u obtiene un div persistente en body (no se remueve nunca) */
@@ -39,6 +40,7 @@ export default function DiagramControls({
   disabled = false,
   exportName = "diagram",
   onGetShareLink,
+  theme = "light",
 }: Props) {
   // ---- Estado mínimo de UI ----
   const [showExportMenu, setShowExportMenu] = useState(false);
@@ -85,19 +87,21 @@ export default function DiagramControls({
   // ========= MiniMap FUERA de React en raíz persistente =========
   const minimapRoot = useMemo(() => {
     if (typeof document === "undefined") return null;
+    const isDark = theme === "dark";
     return ensureRoot("x6-minimap-root", {
       position: "fixed",
       right: "1rem",
       bottom: "1rem",
       zIndex: "50",
-      background: "rgba(255,255,255,0.9)",
-      border: "1px solid #e5e7eb",
+      background: isDark ? "rgba(24, 24, 27, 0.8)" : "rgba(250, 250, 250, 0.8)",
+      border: `1px solid ${isDark ? "#3f3f46" : "#e4e4e7"}`,
       borderRadius: "0.75rem",
       boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
       padding: "0.5rem",
       pointerEvents: "auto",
+      backdropFilter: "blur(8px)",
     });
-  }, []);
+  }, [theme]);
 
   const minimapInstanceRef = useRef<X6MiniMap | null>(null);
 
@@ -154,7 +158,7 @@ export default function DiagramControls({
       const { default: html2canvas } = await import("html2canvas");
       const container = graph.container as HTMLElement;
       const canvas = await html2canvas(container, {
-        background: "#ffffff",
+        backgroundColor: theme === "dark" ? "#18181b" : "#fafafa",
         useCORS: true,
         allowTaint: true,
       });
@@ -195,7 +199,7 @@ export default function DiagramControls({
       const { default: jsPDF } = await import("jspdf");
       const container = graph.container as HTMLElement;
       const canvas = await html2canvas(container, {
-        background: "#ffffff",
+        backgroundColor: theme === "dark" ? "#18181b" : "#fafafa",
         useCORS: true,
         allowTaint: true,
       });
@@ -265,34 +269,27 @@ export default function DiagramControls({
       role="toolbar"
       key="diagram-toolbar"
       style={{ pointerEvents: "auto" }} // reactivamos eventos en el hijo
-      className="rounded-2xl border border-gray-200 bg-white/90 px-2 py-1 shadow backdrop-blur"
+      className="card glass flex items-center gap-1 p-1.5"
     >
-      <div className="flex items-center gap-1">
         {/* Cursor */}
         <button
           onClick={() => onToolClick("cursor")}
           disabled={toolbarDisabled}
-          className={
-            "rounded-xl px-3 py-2 text-sm " +
-            (tool === "cursor"
-              ? "bg-gray-100 text-gray-900"
-              : "text-gray-700 hover:bg-gray-50") +
-            (toolbarDisabled ? " opacity-50 cursor-not-allowed" : "")
-          }
+          className={`btn-ghost !rounded-lg !px-3 !py-2 ${tool === "cursor" ? "!bg-surface-200 dark:!bg-surface-700" : ""}`}
           title="Cursor"
         >
           <IconCursor className="mr-1 inline h-4 w-4" />
           Cursor
         </button>
 
-        <span className="mx-1 h-6 w-px bg-gray-200" />
+        <span className="mx-1 h-6 w-px bg-surface-200 dark:bg-surface-700" />
 
         {/* Zoom */}
         <button
           onClick={zoomOut}
           disabled={toolbarDisabled}
           title="Zoom out"
-          className="rounded-xl px-2 py-2 text-gray-700 hover:bg-gray-50"
+          className="btn-ghost !rounded-lg !p-2"
         >
           <IconZoomOut className="h-5 w-5" />
         </button>
@@ -300,7 +297,7 @@ export default function DiagramControls({
           onClick={zoomIn}
           disabled={toolbarDisabled}
           title="Zoom in"
-          className="rounded-xl px-2 py-2 text-gray-700 hover:bg-gray-50"
+          className="btn-ghost !rounded-lg !p-2"
         >
           <IconZoomIn className="h-5 w-5" />
         </button>
@@ -308,7 +305,7 @@ export default function DiagramControls({
           onClick={center}
           disabled={toolbarDisabled}
           title="Center"
-          className="rounded-xl px-2 py-2 text-gray-700 hover:bg-gray-50"
+          className="btn-ghost !rounded-lg !p-2"
         >
           <IconCenter className="h-5 w-5" />
         </button>
@@ -316,44 +313,44 @@ export default function DiagramControls({
         {/* Guardar */}
         {onSave && (
           <>
-            <span className="mx-1 h-6 w-px bg-gray-200" />
+            <span className="mx-1 h-6 w-px bg-surface-200 dark:bg-surface-700" />
             <button
               onClick={handleSave}
               disabled={toolbarDisabled}
               title="Guardar diagrama"
-              className="rounded-xl px-2 py-2 text-gray-700 hover:bg-gray-50"
+              className="btn-ghost !rounded-lg !p-2"
             >
               <Save className="h-5 w-5" />
             </button>
           </>
         )}
 
-        <span className="mx-1 h-6 w-px bg-gray-200" />
+        <span className="mx-1 h-6 w-px bg-surface-200 dark:bg-surface-700" />
 
         {/* Exportar */}
         <div className="relative" ref={exportMenuRef}>
           <button
             onClick={() => setShowExportMenu((v) => !v)}
             disabled={toolbarDisabled}
-            className="rounded-xl px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-1"
+            className="btn-ghost !rounded-lg !px-3 !py-2"
           >
             <Download className="h-4 w-4" />
             Exportar
-            <ChevronDown className="h-3 w-3" />
+            <ChevronDown className="h-3 w-3 ml-1" />
           </button>
 
           {showExportMenu && !toolbarDisabled && (
-            <div className="absolute top-full mt-1 right-0 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[140px] z-20">
+            <div className="absolute top-full mt-1 right-0 card glass p-1 min-w-[160px] z-20">
               <button
                 onClick={exportPNG}
-                className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                className="w-full text-left rounded-md px-3 py-2 text-sm text-surface-700 dark:text-surface-200 hover:bg-surface-100 dark:hover:bg-surface-800 flex items-center gap-2"
               >
                 <span aria-hidden>🖼️</span>
                 Exportar PNG
               </button>
               <button
                 onClick={exportPDF}
-                className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                className="w-full text-left rounded-md px-3 py-2 text-sm text-surface-700 dark:text-surface-200 hover:bg-surface-100 dark:hover:bg-surface-800 flex items-center gap-2"
               >
                 <span aria-hidden>📄</span>
                 Exportar PDF
@@ -365,19 +362,18 @@ export default function DiagramControls({
         {/* Compartir */}
         {onGetShareLink && (
           <>
-            <span className="mx-1 h-6 w-px bg-gray-200" />
+            <span className="mx-1 h-6 w-px bg-surface-200 dark:bg-surface-700" />
             <button
               onClick={handleShare}
               disabled={sharing}
               title="Compartir enlace del proyecto"
-              className="rounded-xl px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+              className="btn-ghost !rounded-lg !px-3 !py-2"
             >
-              <Share2 className="h-5 w-5" />
+              <Share2 className="h-5 w-5 mr-1" />
               {sharing ? "Generando..." : "Compartir"}
             </button>
           </>
         )}
-      </div>
     </div>
   );
 

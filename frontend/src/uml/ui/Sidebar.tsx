@@ -969,54 +969,57 @@ export default function Sidebar({
   ];
 
   return (
-    <aside className="w-80 border-r border-gray-200 bg-white p-6 hidden md:flex md:flex-col">
+    <aside className="w-80 border-r border-surface-200 dark:border-surface-800 bg-surface-100/50 dark:bg-surface-900/50 p-6 hidden md:flex md:flex-col glass">
+      {/* Header */}
       <div className="mb-6 flex items-center gap-3">
         <button
           onClick={onBack}
-          className="rounded-xl p-2 text-gray-600 hover:bg-gray-100"
+          className="p-2 rounded-xl text-surface-600 dark:text-surface-300 hover:bg-surface-200 dark:hover:bg-surface-800 transition-colors"
+          title="Volver al dashboard"
         >
           <IconBack className="h-5 w-5" />
         </button>
         <div>
-          <div className="text-xs font-bold text-gray-400">UML</div>
-          <div className="text-base font-semibold leading-tight text-gray-900">
-            CLASS DIAGRAM
-          </div>
-          <div className="text-sm font-semibold text-indigo-600">EDITOR</div>
+          <h2 className="text-base font-bold leading-tight text-surface-900 dark:text-surface-100">
+            Editor de Diagramas
+          </h2>
+          <p className="text-xs font-semibold text-primary-600 dark:text-primary-400 uppercase tracking-wider">
+            UML
+          </p>
         </div>
       </div>
 
-      <div className="mt-2 flex-1 space-y-6 overflow-y-auto pr-2">
+      {/* Main content */}
+      <div className="mt-2 flex-1 space-y-6 overflow-y-auto -mr-3 pr-5">
         {/* Elements */}
         <section>
-          <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-gray-700">
-            <span className="inline-block h-4 w-4 rounded border border-gray-300" />
+          <h3 className="mb-3 text-sm font-semibold text-surface-700 dark:text-surface-300 flex items-center gap-2">
+            <span className="w-4 h-4 rounded border-2 border-current" />
             Elementos
           </h3>
           <div className="space-y-2">
-            {/* Botón 'Clase' con click-to-place y handle interno para drag */}
             <button
               onClick={() => onToolClick("class")}
               aria-pressed={tool === "class"}
-              className={`w-full rounded-xl border px-3 py-2 text-left text-sm font-medium ${
+              className={`w-full rounded-xl border px-3 py-2.5 text-left text-sm font-medium transition-all ${
                 tool === "class"
-                  ? "border-indigo-300 bg-indigo-50 text-indigo-700"
-                  : "border-gray-200 hover:bg-gray-50"
+                  ? "border-primary-300 dark:border-primary-500 bg-primary-50 dark:bg-primary-900/30 text-primary-700 dark:text-primary-200 shadow-sm"
+                  : "border-surface-200 dark:border-surface-700 text-surface-800 dark:text-surface-200 hover:bg-surface-200/60 dark:hover:bg-surface-800/60 hover:border-surface-300 dark:hover:border-surface-600"
               }`}
-              title="Clic para colocar en el lienzo • Arrastra el handle para soltar en el lienzo"
+              title="Clic para colocar o arrastrar"
             >
               <div className="flex items-center justify-between">
-                <span>Clase (clic o arrastrar)</span>
-                <span
+                <span>Clase</span>
+                <div
                   role="button"
                   aria-label="Arrastrar Clase"
                   draggable
                   onDragStart={onClassDragStart}
-                  className="cursor-grab select-none rounded border border-dashed border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100"
+                  className="cursor-grab select-none rounded-md border border-dashed border-surface-300 dark:border-surface-600 px-2 py-1 text-xs text-surface-500 dark:text-surface-400 hover:bg-surface-200 dark:hover:bg-surface-700"
                   title="Arrastra desde aquí"
                 >
-                  ⋮⋮
-                </span>
+                  <svg viewBox="0 0 8 8" className="w-2.5 h-2.5" fill="currentColor"><circle cx="2" cy="2" r="1"/><circle cx="6" cy="2" r="1"/><circle cx="2" cy="6" r="1"/><circle cx="6" cy="6" r="1"/></svg>
+                </div>
               </div>
             </button>
           </div>
@@ -1024,8 +1027,8 @@ export default function Sidebar({
 
         {/* Relationships */}
         <section>
-          <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-gray-700">
-            <span className="inline-block h-4 w-4 border-b-2 border-gray-400" />
+          <h3 className="mb-3 text-sm font-semibold text-surface-700 dark:text-surface-300 flex items-center gap-2">
+            <svg viewBox="0 0 16 16" className="w-4 h-4 fill-none stroke-current stroke-2"><path d="M2 12 L14 4" /></svg>
             Relaciones
           </h3>
           <div className="space-y-2">
@@ -1033,17 +1036,14 @@ export default function Sidebar({
               <button
                 key={key}
                 onClick={() => handleRelationTool(key)}
-                className={`w-full rounded-xl border px-3 py-2 text-left text-sm font-medium hover:bg-gray-50 ${
+                className={`w-full rounded-xl border px-3 py-2.5 text-left text-sm font-medium transition-all flex items-center gap-3 ${
                   tool === key
-                    ? "border-indigo-300 bg-indigo-50 text-indigo-700"
-                    : "border-gray-200 text-gray-800"
+                    ? "border-primary-300 dark:border-primary-500 bg-primary-50 dark:bg-primary-900/30 text-primary-700 dark:text-primary-200 shadow-sm"
+                    : "border-surface-200 dark:border-surface-700 text-surface-800 dark:text-surface-200 hover:bg-surface-200/60 dark:hover:bg-surface-800/60 hover:border-surface-300 dark:hover:border-surface-600"
                 }`}
               >
-                <span className="flex items-center gap-2">
-                  {/* Icono en el mismo color que las clases */}
-                  <Icon className="h-4 w-4 text-indigo-600" />
-                  <span>{label}</span>
-                </span>
+                <Icon className="h-5 w-5 text-primary-600 dark:text-primary-400 flex-shrink-0" />
+                <span>{label}</span>
               </button>
             ))}
           </div>
@@ -1051,35 +1051,29 @@ export default function Sidebar({
 
         {/* Code Generation */}
         <section>
-          <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-gray-700">
-            <span className="inline-block h-4 w-4 border-2 border-indigo-400" />
-            Code Generation
+          <h3 className="mb-3 text-sm font-semibold text-surface-700 dark:text-surface-300 flex items-center gap-2">
+            <svg viewBox="0 0 16 16" className="w-4 h-4 fill-none stroke-current stroke-2"><path d="M4 6L2 8L4 10"/><path d="M12 6L14 8L12 10"/><path d="M10 4L6 12"/></svg>
+            Generación de Código
           </h3>
           <div className="space-y-2">
-            <button
+             <button
               onClick={handleGenerateCode}
-              className="w-full flex items-center justify-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm font-medium text-indigo-700 hover:bg-indigo-100"
+              className="w-full btn-secondary justify-center !py-3"
               title="Generar código Spring Boot"
             >
-              {/* ... ícono actual ... */}
-              Generar Código Spring Boot
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor"><path d="M11.643 3.043A2.875 2.875 0 0 0 9.018 2.5a2.88 2.88 0 0 0-2.81 2.257 6.88 6.88 0 0 0-.233 1.834c0 .92.149 1.769.433 2.528.21.56.492 1.07.822 1.502.261.342.55.626.83.841.226.175.44.29.612.336.179.048.33.041.439-.011l.001-.001c.148-.07.252-.182.316-.321a.99.99 0 0 0-.012-.91c-.004-.007-.008-.014-.012-.021-.06-.11-.157-.2-.276-.263a.85.85 0 0 1-.365-.138c-.856-.474-1.33-1.432-1.33-2.428a4.83 4.83 0 0 1 1.284-3.414c.16-.19.348-.363.556-.51.4-.28.847-.466 1.314-.54a.75.75 0 0 0 .637-.738l.01-.133a.75.75 0 0 0-.585-.729c-.363-.075-.744-.117-1.13-.117-.113 0-.225.003-.335.008.002 0 .003-.001.005-.001Zm6.107.25a.75.75 0 0 0-.585.73l.01.132a.75.75 0 0 0 .637.738c.467.073.914.26 1.313.54.208.147.395.32.556.51a4.83 4.83 0 0 1 1.283 3.414c0 .996-.474 1.954-1.33 2.428a.85.85 0 0 1-.366.138c-.12.063-.217.153-.276.263a.62.62 0 0 0-.012.021.99.99 0 0 0-.012.91c.064.14.168.25.316.32l.001.002c.108.05.26.057.44.01.171-.045.385-.16.611-.335.28-.215.57-.499.831-.84.33-.433.612-.943.822-1.503.284-.759.433-1.608.433-2.528a6.88 6.88 0 0 0-.232-1.834A2.88 2.88 0 0 0 18.98 2.5a2.875 2.875 0 0 0-2.625.543l-.002.001-.003.002-.002.001ZM8.01 12.112a5.55 5.55 0 0 0-2.886.63c-1.34.66-2.268 1.94-2.268 3.391 0 .868.29 1.67.828 2.362.532.684 1.28 1.213 2.15 1.527a.75.75 0 0 0 .445-1.393.84.84 0 0 1-.295-.145c-.31-.149-.55-.35-.712-.587a3.89 3.89 0 0 1-.416-1.164c0-.986.6-1.864 1.545-2.345a.75.75 0 0 0 .506-1.276Zm8.425.435a.75.75 0 0 0-1.012-.506c-1.04.48-1.545 1.36-1.545 2.345a3.89 3.89 0 0 1-.416 1.164c-.162.237-.402.438-.712.587a.84.84 0 0 1-.295.145.75.75 0 0 0 .445 1.393c.87-.314 1.618-.843 2.15-1.527.539-.692.828-1.494.828-2.362 0-1.45-.928-2.73-2.268-3.391a5.55 5.55 0 0 0-1.374-.47Z" /></svg>
+              Generar Código Spring
             </button>
 
-            {/* Nuevo botón Flutter */}
             <button
               onClick={handleGenerateFlutter}
-              className="w-full flex items-center justify-center gap-2 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm font-medium text-green-700 hover:bg-green-100"
+              className="w-full btn-secondary justify-center !py-3"
               title="Generar App Flutter (CRUD)"
             >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                className="h-5 w-5"
-                viewBox="0 0 24 24"
-                fill="currentColor"
-              >
-                <path d="M12 2l4 4-8 8-4-4 8-8zM8 18l2-2 6 6H8v-4z" />
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12.9 2.6l8.8 8.8-10.4 10.4-8.8-8.8L12.9 2.6zM7.5 13.3l4.4 4.4 4.4-4.4-4.4-4.4-4.4 4.4z"/>
               </svg>
-              Generar App Flutter (CRUD)
+              Generar App Flutter
             </button>
           </div>
         </section>
@@ -1087,6 +1081,7 @@ export default function Sidebar({
     </aside>
   );
 }
+
 
 // Agregar al final del archivo, ANTES del export default:
 

@@ -1,3 +1,4 @@
+// src/pages/Register.tsx
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { RegisterSchema, type RegisterInput } from "../lib/zodSchemas";
@@ -17,8 +18,35 @@ function GoogleIcon(props: React.SVGProps<SVGSVGElement>) {
   );
 }
 
+function EyeIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+      <circle cx="12" cy="12" r="3"/>
+    </svg>
+  );
+}
+
+function EyeOffIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+      <line x1="1" y1="1" x2="23" y2="23"/>
+    </svg>
+  );
+}
+
+function UserIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+      <circle cx="12" cy="7" r="4"/>
+    </svg>
+  );
+}
+
 export default function Register() {
-  const { setAuth, /* opcional */ loginWithGoogle } = useAuth() as any;
+  const { setAuth, loginWithGoogle } = useAuth() as any;
   const navigate = useNavigate();
   const [serverError, setServerError] = useState<string | null>(null);
   const [showPass, setShowPass] = useState(false);
@@ -32,9 +60,7 @@ export default function Register() {
   const onSubmit = async (values: RegisterInput) => {
     setServerError(null);
     try {
-      // 1) Registrar
       await api.post("/users/register", values);
-      // 2) Loguear automáticamente
       const { data } = await api.post("/auth/login", {
         email: values.email,
         password: values.password,
@@ -49,15 +75,12 @@ export default function Register() {
   const onGoogle = async () => {
     try {
       if (typeof loginWithGoogle === "function") {
-        await loginWithGoogle(); // si tu AuthContext lo expone
+        await loginWithGoogle();
         return;
       }
       const base = import.meta.env.VITE_API_URL || "";
       const redirect = `${window.location.origin}/app`;
-      const url = `${base.replace(
-        /\/$/,
-        ""
-      )}/auth/google?redirect=${encodeURIComponent(redirect)}`;
+      const url = `${base.replace(/\/$/, "")}/auth/google?redirect=${encodeURIComponent(redirect)}`;
       window.location.href = url;
     } catch (e) {
       setServerError(getErrorMessage(e));
@@ -65,121 +88,103 @@ export default function Register() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center px-4 py-10">
-      <div className="w-full max-w-md">
-        <div className="rounded-2xl border border-slate-200 bg-white/90 shadow-xl backdrop-blur p-6 md:p-8">
+    <div className="min-h-screen bg-surface-50 dark:bg-surface-950 gradient-mesh flex items-center justify-center px-4 py-10 transition-colors duration-300">
+      <div className="w-full max-w-md animate-fade-in">
+        {/* Card */}
+        <div className="card glass p-6 md:p-8 shadow-xl">
           {/* Header */}
-          <div className="mb-6 text-center">
-            <div className="mx-auto mb-3 h-12 w-12 rounded-2xl bg-slate-900/90 text-white grid place-items-center shadow">
-              <span className="text-lg font-semibold">UML</span>
+          <div className="mb-8 text-center">
+            <div className="mx-auto mb-4 h-14 w-14 rounded-2xl gradient-primary text-white grid place-items-center shadow-glow">
+              <UserIcon className="h-7 w-7" />
             </div>
-            <h1 className="text-xl font-semibold text-slate-900">
-              Crear cuenta
+            <h1 className="text-2xl font-bold text-surface-900 dark:text-surface-100">
+              Crea tu cuenta
             </h1>
-            <p className="mt-1 text-sm text-slate-500">
-              Regístrate para empezar a diagramar.
+            <p className="mt-2 text-sm text-surface-500 dark:text-surface-400">
+              Comienza a diseñar diagramas UML colaborativos
             </p>
           </div>
 
-          {/* Google */}
+          {/* Google Button */}
           <button
             type="button"
             onClick={onGoogle}
-            className="group mb-5 inline-flex w-full items-center justify-center gap-3 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-800 transition hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-400/50 disabled:opacity-60"
+            className="btn-secondary w-full mb-6 group"
             disabled={isSubmitting}
           >
-            <GoogleIcon className="h-5 w-5 text-slate-700 group-hover:scale-105 transition" />
+            <GoogleIcon className="h-5 w-5 text-surface-600 dark:text-surface-300 group-hover:scale-110 transition-transform" />
             Registrarme con Google
           </button>
 
           {/* Divider */}
-          <div className="relative mb-5">
-            <div className="absolute inset-0 flex items-center">
-              <span className="w-full border-t border-slate-200" />
-            </div>
-            <div className="relative flex justify-center">
-              <span className="bg-white px-3 text-xs text-slate-500">
-                o con email
-              </span>
-            </div>
-          </div>
+          <div className="divider mb-6">o con email</div>
 
           {/* Form */}
-          <form onSubmit={handleSubmit(onSubmit)} className="grid gap-4">
+          <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
+            {/* Name */}
             <div>
-              <label className="mb-1 block text-sm font-medium text-slate-700">
+              <label className="mb-2 block text-sm font-medium text-surface-700 dark:text-surface-300">
                 Nombre
               </label>
               <input
                 {...register("name")}
                 placeholder="Tu nombre"
-                className={`w-full rounded-xl border px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 outline-none transition
-                ${
-                  errors.name
-                    ? "border-rose-400 focus:ring-2 focus:ring-rose-200"
-                    : "border-slate-300 focus:ring-2 focus:ring-slate-300"
-                }`}
+                className={`input ${errors.name ? "border-red-400 dark:border-red-500 focus:border-red-500 focus:ring-red-500/20" : ""}`}
                 autoComplete="name"
               />
               {errors.name && (
-                <p className="mt-1 text-xs text-rose-600">
+                <p className="mt-1.5 text-xs text-red-600 dark:text-red-400 flex items-center gap-1">
+                  <span className="inline-block w-1 h-1 rounded-full bg-red-500" />
                   {errors.name.message}
                 </p>
               )}
             </div>
 
+            {/* Email */}
             <div>
-              <label className="mb-1 block text-sm font-medium text-slate-700">
+              <label className="mb-2 block text-sm font-medium text-surface-700 dark:text-surface-300">
                 Email
               </label>
               <input
                 {...register("email")}
                 placeholder="tucorreo@ejemplo.com"
-                className={`w-full rounded-xl border px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 outline-none transition
-                ${
-                  errors.email
-                    ? "border-rose-400 focus:ring-2 focus:ring-rose-200"
-                    : "border-slate-300 focus:ring-2 focus:ring-slate-300"
-                }`}
+                className={`input ${errors.email ? "border-red-400 dark:border-red-500 focus:border-red-500 focus:ring-red-500/20" : ""}`}
                 autoComplete="email"
                 inputMode="email"
               />
               {errors.email && (
-                <p className="mt-1 text-xs text-rose-600">
+                <p className="mt-1.5 text-xs text-red-600 dark:text-red-400 flex items-center gap-1">
+                  <span className="inline-block w-1 h-1 rounded-full bg-red-500" />
                   {errors.email.message}
                 </p>
               )}
             </div>
 
+            {/* Password */}
             <div>
-              <label className="mb-1 block text-sm font-medium text-slate-700">
+              <label className="mb-2 block text-sm font-medium text-surface-700 dark:text-surface-300">
                 Contraseña
               </label>
-              <div
-                className={`relative flex items-stretch rounded-xl border ${
-                  errors.password ? "border-rose-400" : "border-slate-300"
-                }`}
-              >
+              <div className="relative">
                 <input
                   type={showPass ? "text" : "password"}
                   {...register("password")}
-                  placeholder="••••••••"
-                  className="w-full rounded-xl px-3 py-2.5 pr-10 text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-slate-300"
+                  placeholder="Mínimo 6 caracteres"
+                  className={`input pr-12 ${errors.password ? "border-red-400 dark:border-red-500 focus:border-red-500 focus:ring-red-500/20" : ""}`}
                   autoComplete="new-password"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPass((s) => !s)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg px-2 py-1 text-xs text-slate-600 hover:bg-slate-100"
-                  aria-label={
-                    showPass ? "Ocultar contraseña" : "Mostrar contraseña"
-                  }
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-surface-400 hover:text-surface-600 dark:hover:text-surface-300 hover:bg-surface-100 dark:hover:bg-surface-700 transition-colors"
+                  aria-label={showPass ? "Ocultar contraseña" : "Mostrar contraseña"}
                 >
-                  {showPass ? "Ocultar" : "Mostrar"}
+                  {showPass ? <EyeOffIcon className="h-4 w-4" /> : <EyeIcon className="h-4 w-4" />}
                 </button>
               </div>
               {errors.password && (
-                <p className="mt-1 text-xs text-rose-600">
+                <p className="mt-1.5 text-xs text-red-600 dark:text-red-400 flex items-center gap-1">
+                  <span className="inline-block w-1 h-1 rounded-full bg-red-500" />
                   {errors.password.message}
                 </p>
               )}
@@ -187,34 +192,53 @@ export default function Register() {
 
             {/* Server error */}
             {serverError && (
-              <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-                {serverError}
+              <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/30 px-4 py-3 text-sm text-red-700 dark:text-red-300 animate-fade-in">
+                <div className="flex items-center gap-2">
+                  <svg className="h-4 w-4 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                  </svg>
+                  {serverError}
+                </div>
               </div>
             )}
 
             {/* Submit */}
             <button
               disabled={isSubmitting}
-              className="mt-2 inline-flex w-full items-center justify-center rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white shadow transition hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-slate-400/50 disabled:opacity-60"
+              className="btn-primary w-full mt-2"
             >
-              {isSubmitting ? "Creando…" : "Crear cuenta"}
+              {isSubmitting ? (
+                <>
+                  <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  Creando cuenta…
+                </>
+              ) : (
+                "Crear cuenta"
+              )}
             </button>
           </form>
 
           {/* Footer */}
-          <p className="mt-6 text-center text-sm text-slate-600">
+          <p className="mt-8 text-center text-sm text-surface-600 dark:text-surface-400">
             ¿Ya tienes cuenta?{" "}
             <Link
               to="/login"
-              className="font-medium text-slate-900 hover:underline"
+              className="font-semibold text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 transition-colors"
             >
               Inicia sesión
             </Link>
           </p>
         </div>
 
-        <p className="mt-6 text-center text-xs text-slate-500">
-          Al registrarte aceptas nuestros Términos y la Política de Privacidad.
+        {/* Terms */}
+        <p className="mt-6 text-center text-xs text-surface-400 dark:text-surface-500">
+          Al registrarte aceptas nuestros{" "}
+          <a href="#" className="hover:text-surface-600 dark:hover:text-surface-300 underline">Términos</a>
+          {" "}y{" "}
+          <a href="#" className="hover:text-surface-600 dark:hover:text-surface-300 underline">Política de Privacidad</a>.
         </p>
       </div>
     </div>

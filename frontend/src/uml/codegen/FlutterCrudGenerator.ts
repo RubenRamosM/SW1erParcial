@@ -35,17 +35,11 @@ export class FlutterCrudGenerator {
   private relations: RelationDefinition[] = [];
   private processedRelations: ProcessedRelation[] = [];
   private appName: string;
-  private packageName: string;
-  private apiBaseUrl: string;
 
   constructor(opts?: {
     appName?: string;
-    packageName?: string; // para Android/iOS bundle id (placeholder)
-    apiBaseUrl?: string; // REST base URL, ej: http://10.0.2.2:8080
   }) {
     this.appName = opts?.appName ?? "UmlCrudApp";
-    this.packageName = opts?.packageName ?? "com.example.umlcrud";
-    this.apiBaseUrl = opts?.apiBaseUrl ?? "http://10.0.2.2:8080";
   }
 
   addClass(cls: ClassDefinition) {
@@ -254,19 +248,6 @@ export class FlutterCrudGenerator {
     if (map[t]) return map[t];
     if (/^[A-Z]\w*$/.test(t)) return "String";
     return "String";
-  }
-
-  private valueSample(dartType: string, name: string) {
-    switch (dartType) {
-      case "int":
-        return 1;
-      case "double":
-        return 1.0;
-      case "bool":
-        return true;
-      default:
-        return `"sample_${name}"`;
-    }
   }
 
   // ===== Generate Project Files =====

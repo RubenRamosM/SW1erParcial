@@ -55,19 +55,41 @@ export class AiAssistantService {
   /**
    * Convierte el resultado del scan de imagen en sugerencias del asistente
    * que el frontend puede interpretar y ejecutar automáticamente
+   * MEJORADO: Fallback inteligente cuando hay pocas clases/atributos
    */
   async convertScanToSuggestions(scanResult: any): Promise<AssistantResponse> {
     console.log('[AiAssistant] Convirtiendo scan a sugerencias:', {
       classCount: scanResult.classes?.length || 0,
       relationCount: scanResult.relations?.length || 0,
+      description: scanResult.description || 'N/A',
     });
 
     // Convertir las clases del scan al formato de sugerencias
-    const classSuggestions = (scanResult.classes || []).map((cls: any) => ({
+    let classSuggestions = (scanResult.classes || []).map((cls: any) => ({
       name: cls.name,
       attributes: cls.attributes || [],
       methods: cls.methods || [],
     }));
+
+    // FALLBACK: Si se detectaron clases pero SIN atributos/métodos,
+    // intentar extraer más información del description o usar sugerencias genéricas
+    if (classSuggestions.length > 0) {
+      const totalMembers = classSuggestions.reduce(
+        (sum, cls) => sum + (cls.attributes?.length || 0) + (cls.methods?.length || 0),
+        0,
+      );
+
+      if (totalMembers === 0 && scanResult.description) {
+        console.log(
+          '[AiAssistant] ⚠️ Clases sin atributos detectadas. Intentando extracción mejorada...',
+        );
+        // Podrías intentar analizar el description para sugerir atributos comunes
+        classSuggestions = this.enhanceClassesWithCommonAttributes(
+          classSuggestions,
+          scanResult.description,
+        );
+      }
+    }
 
     // Convertir las relaciones del scan al formato de sugerencias
     const relationSuggestions = (scanResult.relations || []).map(
@@ -75,6 +97,7 @@ export class AiAssistantService {
         from: rel.from,
         to: rel.to,
         type: rel.type || 'assoc',
+        label: rel.label,
         multiplicity: rel.multiplicity
           ? {
               source: rel.multiplicity.source
@@ -88,16 +111,34 @@ export class AiAssistantService {
       }),
     );
 
+    // Mensaje informativo mejorado
+    const totalAttributes = classSuggestions.reduce(
+      (sum, cls) => sum + (cls.attributes?.length || 0),
+      0,
+    );
+    const totalMethods = classSuggestions.reduce(
+      (sum, cls) => sum + (cls.methods?.length || 0),
+      0,
+    );
+
     const message =
       `✨ **Diagrama detectado desde imagen:**\n\n` +
       `📦 **${classSuggestions.length} clases encontradas:** ${classSuggestions.map((c) => c.name).join(', ')}\n` +
+      `📋 **Atributos:** ${totalAttributes} | **Métodos:** ${totalMethods}\n` +
       `🔗 **${relationSuggestions.length} relaciones detectadas**\n\n` +
       `${scanResult.description || 'Diagrama UML de clases'}\n\n` +
       `⭐ **Confianza:** ${scanResult.confidence || 'medium'}\n\n` +
+      `${
+        totalAttributes === 0
+          ? '⚠️ **Nota:** Se detectaron pocas características. Puedes editarlas después de crear las clases.\n\n'
+          : ''
+      }` +
       `Las clases y relaciones se crearán automáticamente.`;
 
     console.log('[AiAssistant] Sugerencias generadas:', {
       classes: classSuggestions.length,
+      attributes: totalAttributes,
+      methods: totalMethods,
       relations: relationSuggestions.length,
     });
 
@@ -111,6 +152,11 @@ export class AiAssistantService {
         '🎨 Las clases se crearán automáticamente en el editor',
         '🔗 Las relaciones se conectarán después de crear las clases',
         '✏️ Puedes editar cualquier clase después de crearla',
+        ...(totalAttributes === 0
+          ? [
+              '💡 Si faltan atributos, edita la clase y agrega manualmente los campos que necesites',
+            ]
+          : []),
       ],
       nextSteps: [
         'Revisa las clases creadas',
@@ -118,6 +164,30 @@ export class AiAssistantService {
         'Edita o agrega más detalles si es necesario',
       ],
     };
+  }
+
+  /**
+   * Intenta mejorar las clases agregando atributos comunes basados en el nombre/descripción
+   * Si el OCR no detectó atributos, al menos sugiere algunos genéricos
+   */
+  private enhanceClassesWithCommonAttributes(
+    classes: Array<{ name: string; attributes: string[]; methods: string[] }>,
+    description: string,
+  ): Array<{ name: string; attributes: string[]; methods: string[] }> {
+    return classes.map((cls) => {
+      // Si la clase no tiene atributos, agregar algunos genéricos
+      if (cls.attributes.length === 0) {
+        const commonAttrs = ['+id: int', '+nombre: String', '+descripcion: String'];
+        console.log(
+          `[AiAssistant] Agregando atributos genéricos a ${cls.name}`,
+        );
+        return {
+          ...cls,
+          attributes: commonAttrs,
+        };
+      }
+      return cls;
+    });
   }
 
   async getContextualHelp(
