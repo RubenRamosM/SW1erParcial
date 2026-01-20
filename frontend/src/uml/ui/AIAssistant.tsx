@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import {
   Bot,
   X,
@@ -8,12 +8,17 @@ import {
   CheckCircle,
   Eye,
   Upload,
+  Stethoscope,
+  RefreshCw,
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { Graph } from "@antv/x6";
 
 // Importa el tipo Tool real desde tu Sidebar
 import type { Tool } from "./Sidebar";
+
+// Generar sessionId único para el historial de conversación
+const generateSessionId = () => `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
 interface AIMessage {
   id: string;
@@ -76,6 +81,9 @@ export default function AIAssistant({
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // SessionId para el historial de conversación con contexto (5A)
+  const [sessionId] = useState(() => generateSessionId());
 
   // -------------------- ANALISIS DEL DIAGRAMA --------------------
   const analyzeDiagramState = () => {
@@ -393,6 +401,7 @@ export default function AIAssistant({
             lastAction: currentTool,
           },
           message: userMessage.content,
+          sessionId: sessionId, // Para historial de conversación con contexto (5A)
         }),
       });
 
@@ -427,64 +436,28 @@ export default function AIAssistant({
 
         setMessages((prev) => [...prev, aiMessage]);
 
-        // 🔥 AUTO-APLICAR creación de clase si el usuario lo pidió explícitamente
-        const normalized = userMessage.content
-          .toLowerCase()
-          .normalize("NFD")
-          .replace(/\p{Diacritic}/gu, "");
+        // 🚀 AUTO-APLICAR INTELIGENTE: Detectar intención y aplicar automáticamente
+        // EXCEPTO cuando es una revisión de diseño (Doctor de Diseño solo informa)
+        const normalizedInput = userMessage.content.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "");
+        const isReviewRequest = normalizedInput.includes("revisar") ||
+                                normalizedInput.includes("doctor") ||
+                                normalizedInput.includes("evaluar") ||
+                                normalizedInput.includes("diagnostico") ||
+                                normalizedInput.includes("analizar diseño") ||
+                                normalizedInput.includes("que falta") ||
+                                normalizedInput.includes("problemas");
 
-        // 🔥 DETECTAR EDICIÓN DE CLASE (agregar atributos/métodos)
-        if (
-          canEdit &&
-          aiMessage.suggestions?.classes?.length &&
-          (normalized.includes("agrega") ||
-            normalized.includes("añade") ||
-            normalized.includes("anade")) &&
-          (normalized.includes("atributo") ||
-            normalized.includes("metodo") ||
-            normalized.includes("método"))
-        ) {
-          if (aiMessage.suggestions.classes.length > 0) {
-            const editClass = aiMessage.suggestions.classes[0];
-            applyEditClass(
-              editClass.name,
-              editClass.attributes,
-              editClass.methods
-            );
+        if (canEdit && aiMessage.suggestions && !isReviewRequest) {
+          const hasClasses = (aiMessage.suggestions.classes?.length || 0) > 0;
+          const hasRelations = (aiMessage.suggestions.relations?.length || 0) > 0;
+
+          // Si hay sugerencias y NO es revisión, aplicarlas automáticamente
+          if (hasClasses || hasRelations) {
+            // Pequeño delay para que el usuario vea el mensaje primero
+            setTimeout(() => {
+              applyAllSuggestions(aiMessage.suggestions!);
+            }, 500);
           }
-        }
-        // 🔥 DETECTAR CREACIÓN DE RELACIÓN
-        else if (
-          canEdit &&
-          aiMessage.suggestions?.relations?.length &&
-          (normalized.includes("crea") ||
-            normalized.includes("crear") ||
-            normalized.includes("agrega") ||
-            normalized.includes("añade") ||
-            normalized.includes("anade")) &&
-          (normalized.includes("relacion") ||
-            normalized.includes("asociacion") ||
-            normalized.includes("herencia") ||
-            normalized.includes("composicion") ||
-            normalized.includes("agregacion") ||
-            normalized.includes("dependencia"))
-        ) {
-          if (aiMessage.suggestions.relations.length > 0) {
-            const relation = aiMessage.suggestions.relations[0];
-            applySuggestion("relation", relation, { silentToast: false });
-          }
-        }
-        // AUTO-APLICAR creación de clase nueva
-        else if (
-          canEdit &&
-          aiMessage.suggestions?.classes?.length &&
-          (normalized.includes("crear clase") ||
-            normalized.includes("crea una clase") ||
-            normalized.startsWith("crea ") ||
-            normalized.includes("crear "))
-        ) {
-          const first = aiMessage.suggestions.classes[0];
-          applySuggestion("class", first, { silentToast: false });
         }
       } else {
         // fallback local
@@ -624,6 +597,73 @@ export default function AIAssistant({
     return {
       content: `Estado: ${analysis.classCount} clases, ${analysis.relationCount} relaciones. ¿Creo una clase nueva?`,
     };
+  };
+
+  // -------------------- APLICAR TODAS LAS SUGERENCIAS AUTOMÁTICAMENTE --------------------
+  const applyAllSuggestions = (suggestions: {
+    classes?: Array<{ name: string; attributes: string[]; methods: string[] }>;
+    relations?: Array<{ from: string; to: string; type: string; multiplicity?: { source?: string; target?: string } }>;
+  }) => {
+    if (!canEdit) return;
+
+    const classes = suggestions.classes || [];
+    const relations = suggestions.relations || [];
+
+    let classesCreated = 0;
+    let relationsCreated = 0;
+    let classesEdited = 0;
+
+    // Primero crear/editar todas las clases
+    for (const cls of classes) {
+      // Verificar si la clase ya existe
+      const existingNode = graph?.getNodes().find(
+        (n) => n.getData()?.name?.toLowerCase() === cls.name.toLowerCase()
+      );
+
+      if (existingNode) {
+        // Editar clase existente
+        applyEditClass(cls.name, cls.attributes, cls.methods);
+        classesEdited++;
+      } else {
+        // Crear clase nueva
+        applySuggestion("class", cls, { silentToast: true });
+        classesCreated++;
+      }
+    }
+
+    // Luego crear las relaciones (con delay para que las clases existan)
+    if (relations.length > 0) {
+      setTimeout(() => {
+        for (const rel of relations) {
+          applySuggestion("relation", rel, { silentToast: true });
+          relationsCreated++;
+        }
+
+        // Mostrar resumen
+        const parts = [];
+        if (classesCreated > 0) parts.push(`${classesCreated} clase(s) creada(s)`);
+        if (classesEdited > 0) parts.push(`${classesEdited} clase(s) actualizada(s)`);
+        if (relationsCreated > 0) parts.push(`${relationsCreated} relación(es) creada(s)`);
+
+        if (parts.length > 0) {
+          toast.success(`✅ ${parts.join(", ")}`, { duration: 4000 });
+        }
+
+        // Centrar vista en el diagrama
+        setTimeout(() => {
+          if (graph) {
+            graph.centerContent();
+            graph.zoomToFit({ padding: 50, maxScale: 1 });
+          }
+        }, 300);
+      }, 800);
+    } else if (classesCreated > 0 || classesEdited > 0) {
+      // Si solo se crearon/editaron clases, mostrar resumen
+      const parts = [];
+      if (classesCreated > 0) parts.push(`${classesCreated} clase(s) creada(s)`);
+      if (classesEdited > 0) parts.push(`${classesEdited} clase(s) actualizada(s)`);
+      toast.success(`✅ ${parts.join(", ")}`, { duration: 4000 });
+    }
   };
 
   // -------------------- APLICAR SUGERENCIAS (CREAR EN EL LIENZO) --------------------
@@ -971,9 +1011,9 @@ export default function AIAssistant({
           </button>
           <button
             onClick={() => setInputValue("Revisar mi diseño")}
-            className="text-xs bg-gray-100 hover:bg-gray-200 rounded px-2 py-1"
+            className="text-xs bg-gradient-to-r from-purple-100 to-blue-100 hover:from-purple-200 hover:to-blue-200 rounded px-2 py-1 font-medium"
           >
-            🔍 Revisar diseño
+            🩺 Doctor de Diseño
           </button>
         </>
       );
@@ -986,6 +1026,12 @@ export default function AIAssistant({
           className="text-xs bg-gray-100 hover:bg-gray-200 rounded px-2 py-1"
         >
           🤔 ¿Qué falta?
+        </button>
+        <button
+          onClick={() => setInputValue("Revisar mi diseño")}
+          className="text-xs bg-gradient-to-r from-purple-100 to-blue-100 hover:from-purple-200 hover:to-blue-200 rounded px-2 py-1 font-medium"
+        >
+          🩺 Doctor de Diseño
         </button>
         <button
           onClick={() => setInputValue("Ayúdame a mejorar")}

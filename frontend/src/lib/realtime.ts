@@ -14,6 +14,7 @@ export type RealtimeOptions = {
   shareToken?: string | null;
   onJoined?: (data: JoinResult) => void;
   onRemotePatch?: (patch: Patch) => void;
+  onSnapshotUpdated?: (snapshot: DiagramSnapshot) => void;
   onPresence?: (evt: any) => void;
   onEditDenied?: (reason: string) => void;
   onRequestQueued?: () => void;
@@ -63,6 +64,16 @@ export class RealtimeClient {
       });
     } else {
       this.socket.on("remotePatch", () => {});
+    }
+
+    // snapshotUpdated - ✅ Escuchar cambios de snapshot desde el servidor
+    if (opts.onSnapshotUpdated) {
+      this.socket.on("snapshot:update", (data: { snapshot: DiagramSnapshot; projectId: string }) => {
+        console.log('[RealtimeClient] 📥 Snapshot updated from server:', data);
+        opts.onSnapshotUpdated!(data.snapshot);
+      });
+    } else {
+      this.socket.on("snapshot:update", () => {});
     }
 
     // presence

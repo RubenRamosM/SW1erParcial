@@ -70,6 +70,15 @@ export class DiagramGateway implements OnGatewayInit {
     });
   }
 
+  /**
+   * Emite un snapshot actualizado a todos los clientes en una sala
+   * Usado cuando el snapshot se actualiza fuera de WebSocket (ej: PUT HTTP)
+   */
+  emitSnapshotUpdate(projectId: string, snapshot: any) {
+    console.log('[DiagramGateway] 📡 Emitting snapshot update to room', projectId);
+    this.server.to(projectId).emit('snapshot:update', { snapshot, projectId });
+  }
+
   private async parseUserIdFromToken(token?: string): Promise<string | null> {
     if (!token) return null;
     try {
@@ -103,10 +112,11 @@ export class DiagramGateway implements OnGatewayInit {
       };
 
       (room as any).snapshot = persisted; // ← esto es suficiente
-      console.log('[hydrate] room snapshot hydrated from DB for', projectId);
+      console.log('[hydrate] room snapshot hydrated from DB for', projectId, 'nodes:', persisted.nodes?.length ?? 0, 'edges:', persisted.edges?.length ?? 0);
       return persisted;
     }
 
+    console.log('[hydrate] room already has snapshot for', projectId, 'nodes:', (current as any).nodes?.length ?? 0, 'edges:', (current as any).edges?.length ?? 0);
     return current!;
   }
 
@@ -386,6 +396,7 @@ export class DiagramGateway implements OnGatewayInit {
       });
       return;
     }
+    console.log('[DiagramGateway] Received y:sync:push for project', projectId, 'update size:', updateBase64?.length ?? 0);
     const update = fromBase64(updateBase64);
     this.realtime.applyRemoteUpdate(projectId, update);
     client.to(projectId).emit('y:update', { updateBase64 });

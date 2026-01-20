@@ -82,6 +82,7 @@ export class RealtimeService implements OnModuleInit {
   private rooms = new Map<string, RoomState>();
   private presenceTimeoutMs = 45_000;
   private instanceId = randomUUID(); // para evitar bucles de pub/sub
+  private gateway?: any; // Referencia al gateway para emitir eventos
 
   constructor(
     private prisma: PrismaService,
@@ -89,9 +90,16 @@ export class RealtimeService implements OnModuleInit {
     @Inject('REDIS_SUB') private sub: Redis,
   ) {}
 
+  /**
+   * Inyectar el gateway (se hace en el módulo después de que ambos están listos)
+   */
+  setGateway(gateway: any) {
+    this.gateway = gateway;
+  }
+
   async onModuleInit() {
     // Subscribir a los canales globales
-    await this.sub.subscribe('diagram:yupdate', 'diagram:presence');
+    await this.sub.subscribe('diagram:yupdate', 'diagram:presence', 'diagram:snapshot');
     this.sub.on('message', (channel: string, message: string) => {
       try {
         const payload = JSON.parse(message);
@@ -104,6 +112,14 @@ export class RealtimeService implements OnModuleInit {
           this.ensureRoom(projectId).then(() => {
             applyUpdate(this.rooms.get(projectId)!.ydoc, update);
             this.rooms.get(projectId)!.debouncedSave();
+          });
+        } else if (channel === 'diagram:snapshot') {
+          // ✅ Actualizar snapshot cuando otro servidor lo cambió
+          const { projectId, snapshot } = payload;
+          this.ensureRoom(projectId).then(() => {
+            const room = this.rooms.get(projectId)!;
+            room.snapshot = snapshot;
+            console.log('[RealtimeService] 📥 Received snapshot update from another instance for project', projectId);
           });
         } else if (channel === 'diagram:presence') {
           const {
@@ -180,7 +196,9 @@ export class RealtimeService implements OnModuleInit {
   private snapshotFromDoc(doc: Y.Doc, prev: DiagramSnapshot): DiagramSnapshot {
     // Primero intentar recuperar desde el mapa "diagram" que el frontend actualiza
     const diagramMap = doc.getMap('diagram');
-    const snapshotBase64 = diagramMap?.get('snapshotBase64');
+    const snapshotBase64 = diagramMap?.get('snapshotBase64') as string | undefined;
+    
+    console.log('[RealtimeService] snapshotFromDoc - snapshotBase64 exists:', !!snapshotBase64, 'length:', snapshotBase64?.length ?? 0);
     
     if (typeof snapshotBase64 === 'string' && snapshotBase64.length) {
       try {
@@ -189,6 +207,7 @@ export class RealtimeService implements OnModuleInit {
         if (parsed && Array.isArray(parsed.nodes) && Array.isArray(parsed.edges)) {
           const fullUpdate = encodeStateAsUpdate(doc);
           const base64 = toBase64(fullUpdate);
+          console.log('[RealtimeService] Successfully extracted from snapshotBase64 - nodes:', parsed.nodes.length, 'edges:', parsed.edges.length);
           return {
             nodes: parsed.nodes,
             edges: parsed.edges,
@@ -196,15 +215,21 @@ export class RealtimeService implements OnModuleInit {
             $y: base64,
           };
         }
-      } catch {}
+      } catch (e) {
+        console.warn('[RealtimeService] Error parsing snapshotBase64:', e);
+      }
     }
 
     // Fallback: intentar desde yRoot.nodes/edges (legacy)
     const yRoot = doc.getMap('root');
-    const nodes =
-      (yRoot.get('nodes') as Y.Array<any>)?.toArray?.() ?? prev.nodes ?? [];
-    const edges =
-      (yRoot.get('edges') as Y.Array<any>)?.toArray?.() ?? prev.edges ?? [];
+    const yNodes = yRoot.get('nodes') as Y.Array<any>;
+    const yEdges = yRoot.get('edges') as Y.Array<any>;
+    
+    const nodes = yNodes?.toArray?.() ?? prev.nodes ?? [];
+    const edges = yEdges?.toArray?.() ?? prev.edges ?? [];
+    
+    console.log('[RealtimeService] Fallback to yRoot - nodes:', nodes.length, 'edges:', edges.length);
+    
     const fullUpdate = encodeStateAsUpdate(doc);
     const base64 = toBase64(fullUpdate);
     return { nodes, edges, updatedAt: new Date().toISOString(), $y: base64 };
@@ -223,9 +248,12 @@ export class RealtimeService implements OnModuleInit {
           snapshot: fresh as unknown as Prisma.InputJsonValue,
         },
       });
+      console.log('[RealtimeService] Created new empty snapshot for project', projectId);
       return fresh;
     }
-    return toSnapshot(diagram.snapshot);
+    const snap = toSnapshot(diagram.snapshot);
+    console.log('[RealtimeService] Loaded snapshot from DB for project', projectId, 'nodes:', snap.nodes.length, 'edges:', snap.edges.length);
+    return snap;
   }
 
   getRoom(projectId: string) {
@@ -240,12 +268,26 @@ export class RealtimeService implements OnModuleInit {
       const room = this.rooms.get(projectId);
       if (!room) return;
       const toSave = this.snapshotFromDoc(room.ydoc, room.snapshot);
-      await this.prisma.diagram.update({
-        where: { projectId },
-        data: { snapshot: toSave as unknown as Prisma.InputJsonValue },
-      });
-      room.snapshot = toSave;
-    }, 700);
+      
+      // Solo guardar si hay cambios reales
+      if (toSave.nodes.length === 0 && toSave.edges.length === 0 && room.snapshot.nodes.length === 0 && room.snapshot.edges.length === 0) {
+        console.log('[RealtimeService] Skipping save - no data to save');
+        return;
+      }
+      
+      console.log('[RealtimeService] Saving snapshot to DB for project', projectId, 'nodes:', toSave.nodes.length, 'edges:', toSave.edges.length);
+      
+      try {
+        await this.prisma.diagram.update({
+          where: { projectId },
+          data: { snapshot: toSave as unknown as Prisma.InputJsonValue },
+        });
+        room.snapshot = toSave;
+        console.log('[RealtimeService] Snapshot saved successfully');
+      } catch (error) {
+        console.error('[RealtimeService] Error saving snapshot:', error.message);
+      }
+    }, 2000); // Aumentado a 2 segundos para reducir escrituras
     const state: RoomState = {
       ydoc,
       snapshot,
@@ -267,8 +309,21 @@ export class RealtimeService implements OnModuleInit {
   applyRemoteUpdate(projectId: string, update: Uint8Array) {
     const room = this.rooms.get(projectId);
     if (!room) return;
+    
+    // Evitar aplicar el mismo update múltiples veces
+    const updateHash = Buffer.from(update).toString('base64').substring(0, 50);
+    const lastUpdateKey = `${projectId}_lastUpdate`;
+    
+    if ((this as any)[lastUpdateKey] === updateHash) {
+      console.log('[RealtimeService] Skipping duplicate update for project', projectId);
+      return;
+    }
+    
+    (this as any)[lastUpdateKey] = updateHash;
+    
     applyUpdate(room.ydoc, update);
     room.debouncedSave();
+    console.log('[RealtimeService] Applied remote update for project', projectId, 'triggering save...');
     // publica para otras instancias
     const msg = JSON.stringify({
       sourceId: this.instanceId,
@@ -276,6 +331,36 @@ export class RealtimeService implements OnModuleInit {
       updateBase64: toBase64(update),
     });
     this.pub.publish('diagram:yupdate', msg);
+  }
+
+  /**
+   * Broadcast un snapshot actualizado a todos los clientes de una sala
+   * Se usa cuando el snapshot se actualiza fuera de Y.js (ej: PUT del controlador)
+   */
+  broadcastSnapshotUpdate(projectId: string, snapshot: DiagramSnapshot) {
+    const room = this.rooms.get(projectId);
+    if (!room) {
+      console.log('[RealtimeService] Room not found for project', projectId, '(no clients connected)');
+    } else {
+      // Actualizar el snapshot local en la sala
+      room.snapshot = snapshot;
+    }
+    
+    // ✅ Emitir a todos los clientes conectados en esta instancia
+    if (this.gateway) {
+      this.gateway.emitSnapshotUpdate(projectId, snapshot);
+    }
+    
+    // Publicar para que otros servidores también lo noten
+    const msg = JSON.stringify({
+      sourceId: this.instanceId,
+      projectId,
+      snapshot,
+      type: 'snapshot:update',
+    });
+    this.pub.publish('diagram:snapshot', msg);
+    
+    console.log('[RealtimeService] 📡 Broadcasted snapshot update for project', projectId);
   }
 
   // --- Presencia ---

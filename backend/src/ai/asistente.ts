@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { AiService } from './ai.service';
+import Groq from 'groq-sdk';
 
 export interface DiagramContext {
   nodes: Array<{
@@ -18,6 +19,44 @@ export interface DiagramContext {
   }>;
   lastAction?: string;
   userLevel: 'beginner' | 'intermediate' | 'advanced';
+}
+
+// Interfaz para el historial de conversación
+export interface ConversationMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: Date;
+  context?: {
+    mentionedClasses?: string[];
+    lastCreatedClass?: string;
+    lastAction?: string;
+  };
+}
+
+// Interfaz para el análisis de intención
+export interface IntentAnalysis {
+  intent: 'create_class' | 'edit_class' | 'create_relation' | 'delete' | 'analyze' | 'review_design' | 'suggest_improvements' | 'explain' | 'generate_system' | 'unknown';
+  entities: {
+    className?: string;
+    targetClassName?: string;
+    attributes?: string[];
+    methods?: string[];
+    relationType?: string;
+    systemDomain?: string;
+  };
+  confidence: number;
+  requiresIntermediateClass?: boolean;
+  suggestedIntermediateClass?: string;
+}
+
+// Interfaz para problemas de diseño detectados
+export interface DesignIssue {
+  type: 'warning' | 'error' | 'suggestion';
+  category: 'structure' | 'naming' | 'relationships' | 'completeness' | 'patterns';
+  message: string;
+  affectedElements: string[];
+  suggestion?: string;
+  priority: 'high' | 'medium' | 'low';
 }
 
 export interface AssistantSuggestion {
@@ -50,7 +89,1075 @@ export interface AssistantResponse {
 
 @Injectable()
 export class AiAssistantService {
-  constructor(private readonly aiService: AiService) {}
+  private groq: Groq | null = null;
+  private conversationHistory: Map<string, ConversationMessage[]> = new Map();
+  private lastMentionedClass: Map<string, string> = new Map();
+
+  constructor(private readonly aiService: AiService) {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (apiKey) {
+      this.groq = new Groq({ apiKey });
+    }
+  }
+
+  // ================== ANÁLISIS DE INTENCIÓN CON IA (1A) ==================
+
+  /**
+   * Analiza la intención del usuario usando IA en lugar de palabras clave
+   * Interpreta el mensaje completo para entender qué quiere hacer el usuario
+   */
+  async analyzeUserIntent(
+    message: string,
+    context: DiagramContext,
+    sessionId: string = 'default'
+  ): Promise<IntentAnalysis> {
+    const history = this.conversationHistory.get(sessionId) || [];
+    const lastClass = this.lastMentionedClass.get(sessionId);
+
+    // Construir contexto del diagrama para el prompt
+    const diagramSummary = this.buildDiagramSummary(context);
+    const historyContext = this.buildHistoryContext(history.slice(-5));
+
+    const systemPrompt = `Eres un experto analizador de intenciones para un editor de diagramas UML.
+Tu trabajo es interpretar lo que el usuario quiere hacer basándote en su mensaje, el contexto del diagrama y el historial de conversación.
+
+CONTEXTO ACTUAL DEL DIAGRAMA:
+${diagramSummary}
+
+HISTORIAL RECIENTE:
+${historyContext}
+
+${lastClass ? `ÚLTIMA CLASE MENCIONADA: ${lastClass}` : ''}
+
+INSTRUCCIONES:
+1. Analiza el mensaje del usuario para determinar su intención
+2. Si el usuario dice "agrégale", "ponle", "hazlo más grande", etc. sin especificar la clase, asume que se refiere a la última clase mencionada
+3. Si detectas una relación muchos-a-muchos (ej: "Estudiante tiene muchos Cursos y Curso tiene muchos Estudiantes"), sugiere una clase intermedia
+4. Identifica todas las entidades mencionadas (clases, atributos, métodos, tipos de relación)
+
+TIPOS DE INTENCIÓN:
+- create_class: Crear una nueva clase
+- edit_class: Modificar una clase existente (agregar atributos/métodos)
+- create_relation: Crear una relación entre clases
+- delete: Eliminar elementos
+- analyze: Analizar el diagrama actual
+- review_design: Revisar y evaluar el diseño (Doctor de Diseño)
+- suggest_improvements: Pedir sugerencias de mejora
+- explain: Pedir explicaciones sobre UML o el diagrama
+- generate_system: Generar un sistema completo basado en un dominio
+- unknown: No se puede determinar la intención
+
+RESPONDE EN JSON ESTRICTO:
+{
+  "intent": "tipo_de_intención",
+  "entities": {
+    "className": "nombre de la clase principal (si aplica)",
+    "targetClassName": "nombre de la clase destino para relaciones (si aplica)",
+    "attributes": ["array de atributos en formato 'nombre: Tipo'"],
+    "methods": ["array de métodos en formato 'nombre()'"],
+    "relationType": "assoc|inherit|comp|aggr|dep|many-to-many (si aplica)",
+    "systemDomain": "dominio del sistema si pide generar uno (farmacia, tienda, etc.)"
+  },
+  "confidence": 0.0-1.0,
+  "requiresIntermediateClass": true/false,
+  "suggestedIntermediateClass": "NombreClaseIntermedia (si requiresIntermediateClass es true)"
+}`;
+
+    if (!this.groq) {
+      // Fallback sin IA: usar análisis básico mejorado
+      return this.analyzeIntentFallback(message, context, lastClass);
+    }
+
+    try {
+      const completion = await this.groq.chat.completions.create({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: message }
+        ],
+        model: 'llama-3.3-70b-versatile',
+        temperature: 0.1,
+        max_tokens: 1000,
+        response_format: { type: 'json_object' }
+      });
+
+      const raw = completion.choices?.[0]?.message?.content ?? '';
+      const parsed = JSON.parse(raw);
+
+      console.log('[AiAssistant] Intención analizada:', parsed);
+
+      return {
+        intent: parsed.intent || 'unknown',
+        entities: parsed.entities || {},
+        confidence: parsed.confidence || 0.5,
+        requiresIntermediateClass: parsed.requiresIntermediateClass || false,
+        suggestedIntermediateClass: parsed.suggestedIntermediateClass
+      };
+    } catch (error) {
+      console.error('[AiAssistant] Error analizando intención:', error);
+      return this.analyzeIntentFallback(message, context, lastClass);
+    }
+  }
+
+  /**
+   * Fallback de análisis de intención sin IA
+   */
+  private analyzeIntentFallback(
+    message: string,
+    context: DiagramContext,
+    lastClass?: string
+  ): IntentAnalysis {
+    const normalized = this.normalize(message);
+
+    // Detectar intención de revisión de diseño
+    if (normalized.includes('revisar') || normalized.includes('doctor') ||
+        normalized.includes('evaluar') || normalized.includes('diagnostico') ||
+        normalized.includes('problemas') || normalized.includes('errores')) {
+      return {
+        intent: 'review_design',
+        entities: {},
+        confidence: 0.8
+      };
+    }
+
+    // Detectar creación de clase
+    if (normalized.includes('crea') || normalized.includes('crear') ||
+        normalized.includes('nueva clase') || normalized.includes('agregar clase')) {
+      const classMatch = message.match(/clase\s+([A-Za-z][A-Za-z0-9_]*)/i);
+      return {
+        intent: 'create_class',
+        entities: {
+          className: classMatch?.[1] || undefined,
+          attributes: this.extractAttributes(message),
+          methods: this.extractMethods(message)
+        },
+        confidence: 0.7
+      };
+    }
+
+    // Detectar edición de clase (agregar atributos/métodos)
+    if ((normalized.includes('agrega') || normalized.includes('añade') ||
+         normalized.includes('ponle') || normalized.includes('agregale')) &&
+        (normalized.includes('atributo') || normalized.includes('metodo') ||
+         normalized.includes('campo') || normalized.includes('propiedad'))) {
+
+      // Buscar clase objetivo o usar la última mencionada
+      let targetClass = this.findClassInMessage(message, context);
+      if (!targetClass && lastClass) {
+        targetClass = lastClass;
+      }
+
+      return {
+        intent: 'edit_class',
+        entities: {
+          className: targetClass,
+          attributes: this.extractAttributes(message),
+          methods: this.extractMethods(message)
+        },
+        confidence: targetClass ? 0.8 : 0.5
+      };
+    }
+
+    // Detectar creación de relación
+    if (normalized.includes('relacion') || normalized.includes('conecta') ||
+        normalized.includes('asocia') || normalized.includes('hereda') ||
+        normalized.includes('compone') || normalized.includes('agrega')) {
+
+      const { from, to, type, isNtoM } = this.extractRelationInfo(message, context);
+
+      return {
+        intent: 'create_relation',
+        entities: {
+          className: from,
+          targetClassName: to,
+          relationType: type
+        },
+        confidence: (from && to) ? 0.8 : 0.4,
+        requiresIntermediateClass: isNtoM,
+        suggestedIntermediateClass: (isNtoM && from && to) ? this.suggestIntermediateClassName(from, to) : undefined
+      };
+    }
+
+    // Detectar generación de sistema
+    const domains = ['farmacia', 'tienda', 'hospital', 'biblioteca', 'universidad',
+                     'restaurante', 'inventario', 'ecommerce', 'escuela'];
+    for (const domain of domains) {
+      if (normalized.includes(domain)) {
+        return {
+          intent: 'generate_system',
+          entities: { systemDomain: domain },
+          confidence: 0.9
+        };
+      }
+    }
+
+    return {
+      intent: 'unknown',
+      entities: {},
+      confidence: 0.3
+    };
+  }
+
+  // ================== DETECCIÓN DE N:M CON CLASES INTERMEDIAS (2A) ==================
+
+  /**
+   * Detecta si una relación debería ser muchos-a-muchos y sugiere clase intermedia
+   */
+  detectManyToManyRelation(
+    sourceClass: string,
+    targetClass: string,
+    context: DiagramContext
+  ): { isNtoM: boolean; intermediateClass?: { name: string; attributes: string[]; methods: string[] } } {
+
+    // Patrones conocidos que típicamente son N:M
+    const nToMPatterns = [
+      ['estudiante', 'curso'],
+      ['estudiante', 'materia'],
+      ['producto', 'pedido'],
+      ['usuario', 'rol'],
+      ['empleado', 'proyecto'],
+      ['actor', 'pelicula'],
+      ['autor', 'libro'],
+      ['paciente', 'medico'],
+      ['cliente', 'producto'],
+      ['alumno', 'asignatura']
+    ];
+
+    const sourceLower = sourceClass.toLowerCase();
+    const targetLower = targetClass.toLowerCase();
+
+    for (const [a, b] of nToMPatterns) {
+      if ((sourceLower.includes(a) && targetLower.includes(b)) ||
+          (sourceLower.includes(b) && targetLower.includes(a))) {
+
+        const intermediateName = this.suggestIntermediateClassName(sourceClass, targetClass);
+        const intermediateAttrs = this.suggestIntermediateAttributes(sourceClass, targetClass, intermediateName);
+
+        return {
+          isNtoM: true,
+          intermediateClass: {
+            name: intermediateName,
+            attributes: intermediateAttrs,
+            methods: ['registrar()', 'cancelar()', 'obtenerDetalles()']
+          }
+        };
+      }
+    }
+
+    return { isNtoM: false };
+  }
+
+  /**
+   * Sugiere un nombre para la clase intermedia
+   */
+  private suggestIntermediateClassName(source: string, target: string): string {
+    const patterns: Record<string, string> = {
+      'estudiante_curso': 'Inscripcion',
+      'estudiante_materia': 'Matricula',
+      'producto_pedido': 'DetallePedido',
+      'usuario_rol': 'UsuarioRol',
+      'empleado_proyecto': 'AsignacionProyecto',
+      'actor_pelicula': 'Actuacion',
+      'autor_libro': 'Autoria',
+      'paciente_medico': 'Cita',
+      'cliente_producto': 'Compra',
+      'alumno_asignatura': 'Inscripcion'
+    };
+
+    const key = `${source.toLowerCase()}_${target.toLowerCase()}`;
+    const reverseKey = `${target.toLowerCase()}_${source.toLowerCase()}`;
+
+    return patterns[key] || patterns[reverseKey] || `${source}${target}`;
+  }
+
+  /**
+   * Sugiere atributos para la clase intermedia
+   */
+  private suggestIntermediateAttributes(source: string, target: string, intermediateName: string): string[] {
+    const baseAttrs = ['id: Long', 'fechaCreacion: Date'];
+
+    const specificAttrs: Record<string, string[]> = {
+      'Inscripcion': ['calificacion: Double', 'estado: String', 'periodo: String'],
+      'Matricula': ['semestre: String', 'estado: String', 'fechaMatricula: Date'],
+      'DetallePedido': ['cantidad: Integer', 'precioUnitario: Double', 'subtotal: Double'],
+      'Cita': ['fecha: Date', 'hora: String', 'motivo: String', 'estado: String'],
+      'Compra': ['cantidad: Integer', 'precio: Double', 'fechaCompra: Date'],
+      'AsignacionProyecto': ['rol: String', 'horasAsignadas: Integer', 'fechaInicio: Date']
+    };
+
+    return [...baseAttrs, ...(specificAttrs[intermediateName] || ['descripcion: String'])];
+  }
+
+  // ================== SUGERENCIAS PROACTIVAS DE RELACIONES (3B) ==================
+
+  /**
+   * Sugiere relaciones cuando se crea una nueva clase
+   */
+  suggestRelationsForNewClass(
+    newClassName: string,
+    newClassAttributes: string[],
+    context: DiagramContext
+  ): Array<{ from: string; to: string; type: string; explanation: string; multiplicity?: { source: string; target: string } }> {
+    const suggestions: Array<{ from: string; to: string; type: string; explanation: string; multiplicity?: { source: string; target: string } }> = [];
+    const newClassLower = newClassName.toLowerCase();
+
+    // ✅ Verificar relaciones existentes para no duplicar
+    const connectedClasses = this.getConnectedClasses(newClassName, context);
+
+    for (const node of context.nodes) {
+      const existingClassLower = node.name.toLowerCase();
+
+      // 🚫 NUNCA sugerir relación si YA EXISTE
+      if (connectedClasses.has(node.name)) {
+        console.log(`[suggestRelations] 🚫 Relación con ${node.name} YA EXISTE, ignorando`);
+        continue;
+      }
+
+      // Detectar posible herencia
+      if (this.isLikelyInheritance(newClassLower, existingClassLower)) {
+        if (!this.relationshipExists(newClassName, node.name, context, true)) {
+          suggestions.push({
+            from: newClassName,
+            to: node.name,
+            type: 'inherit',
+            explanation: `${newClassName} podría heredar de ${node.name} (relación "es un tipo de")`
+          });
+        }
+      }
+
+      // Detectar posible composición
+      if (this.isLikelyComposition(newClassLower, existingClassLower)) {
+        if (!this.relationshipExists(node.name, newClassName, context)) {
+          suggestions.push({
+            from: node.name,
+            to: newClassName,
+            type: 'comp',
+            explanation: `${newClassName} es parte esencial de ${node.name}`,
+            multiplicity: { source: '1', target: '1..*' }
+          });
+        }
+      }
+
+      // Detectar posible asociación por atributos que referencian la otra clase
+      const hasReference = newClassAttributes.some(attr =>
+        attr.toLowerCase().includes(existingClassLower) ||
+        attr.toLowerCase().includes(node.name.toLowerCase().slice(0, -1)) // singular
+      );
+
+      if (hasReference) {
+        if (!this.relationshipExists(newClassName, node.name, context)) {
+          suggestions.push({
+            from: newClassName,
+            to: node.name,
+            type: 'assoc',
+            explanation: `${newClassName} tiene una referencia a ${node.name}`,
+            multiplicity: { source: '*', target: '1' }
+          });
+        }
+      }
+
+      // Detectar N:M potencial
+      const nToMCheck = this.detectManyToManyRelation(newClassName, node.name, context);
+      if (nToMCheck.isNtoM && nToMCheck.intermediateClass) {
+        if (!this.relationshipExists(newClassName, node.name, context, true)) {
+          suggestions.push({
+            from: newClassName,
+            to: node.name,
+            type: 'many-to-many',
+            explanation: `Relación muchos-a-muchos detectada. Sugerencia: crear clase intermedia "${nToMCheck.intermediateClass.name}"`
+          });
+        }
+      }
+    }
+
+    return suggestions.slice(0, 3); // Máximo 3 sugerencias
+  }
+
+  private isLikelyInheritance(child: string, parent: string): boolean {
+    const inheritancePairs = [
+      { children: ['empleado', 'cliente', 'estudiante', 'profesor', 'admin'], parent: 'persona' },
+      { children: ['perro', 'gato', 'ave'], parent: 'animal' },
+      { children: ['auto', 'moto', 'camion'], parent: 'vehiculo' },
+      { children: ['factura', 'recibo', 'boleta'], parent: 'documento' }
+    ];
+
+    for (const pair of inheritancePairs) {
+      if (pair.children.some(c => child.includes(c)) && parent.includes(pair.parent)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private isLikelyComposition(part: string, whole: string): boolean {
+    const compositionPairs = [
+      // Español
+      ['motor', 'auto'],
+      ['habitacion', 'casa'],
+      ['pagina', 'libro'],
+      ['item', 'pedido'],
+      ['detalle', 'factura'],
+      ['linea', 'factura'],
+      ['asiento', 'avion'],
+      ['tecla', 'teclado'],
+      ['pantalla', 'monitor'],
+      ['celula', 'tejido'],
+
+      // Inglés
+      ['engine', 'car'],
+      ['room', 'house'],
+      ['page', 'book'],
+      ['orderitem', 'order'],
+      ['orderline', 'order'],
+      ['invoiceitem', 'invoice'],
+      ['invoiceline', 'invoice'],
+      ['seat', 'airplane'],
+      ['key', 'keyboard'],
+      ['screen', 'monitor'],
+      ['cell', 'tissue']
+    ];
+
+    return compositionPairs.some(([p, w]) => part.includes(p) && whole.includes(w));
+  }
+
+  /**
+   * Verifica si una relación YA EXISTE en el diagrama actual
+   * Considera ambas direcciones para relaciones bidireccionales
+   */
+  private relationshipExists(
+    fromClass: string,
+    toClass: string,
+    context: DiagramContext,
+    ignoreDirection: boolean = false
+  ): boolean {
+    const fromNode = context.nodes.find(n => this.normalize(n.name) === this.normalize(fromClass));
+    const toNode = context.nodes.find(n => this.normalize(n.name) === this.normalize(toClass));
+
+    if (!fromNode || !toNode) return false;
+
+    // Verificar relación directa
+    const directExists = context.edges.some(e => e.source === fromNode.id && e.target === toNode.id);
+    if (directExists) return true;
+
+    // Si ignoreDirection, también verificar la relación inversa
+    if (ignoreDirection) {
+      const inverseExists = context.edges.some(e => e.source === toNode.id && e.target === fromNode.id);
+      if (inverseExists) return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Obtiene todas las clases a las que YA está conectada una clase
+   */
+  private getConnectedClasses(className: string, context: DiagramContext): Set<string> {
+    const classNode = context.nodes.find(n => this.normalize(n.name) === this.normalize(className));
+    if (!classNode) return new Set();
+
+    const connected = new Set<string>();
+    for (const edge of context.edges) {
+      if (edge.source === classNode.id) {
+        const targetNode = context.nodes.find(n => n.id === edge.target);
+        if (targetNode) connected.add(targetNode.name);
+      }
+      if (edge.target === classNode.id) {
+        const sourceNode = context.nodes.find(n => n.id === edge.source);
+        if (sourceNode) connected.add(sourceNode.name);
+      }
+    }
+    return connected;
+  }
+
+  /**
+   * Verifica si una clase YA EXISTE en el diagrama
+   */
+  private classExists(className: string, context: DiagramContext): boolean {
+    return context.nodes.some(n => this.normalize(n.name) === this.normalize(className));
+  }
+
+  // ================== DOCTOR DE DISEÑO CON IA (4D) ==================
+
+  /**
+   * Analiza el diagrama completo usando IA y genera sugerencias inteligentes
+   * NO crea duplicados, solo sugiere lo que FALTA
+   */
+  async reviewDesign(context: DiagramContext): Promise<{
+    score: number;
+    issues: DesignIssue[];
+    summary: string;
+    recommendations: string[];
+  }> {
+
+    // Si no hay Groq, usar análisis básico
+    if (!this.groq) {
+      return this.reviewDesignBasic(context);
+    }
+
+    // Construir descripción detallada del diagrama
+    const diagramDescription = this.describeDiagramForReview(context);
+
+    const systemPrompt = `Eres un EXPERTO en diseño UML y arquitectura de software.
+Tu tarea es REVISAR un diagrama de clases y dar un diagnóstico PROFESIONAL Y RIGUROSO.
+
+═══════════════════════════════════════════════════════════════
+                    DIAGRAMA A REVISAR
+═══════════════════════════════════════════════════════════════
+${diagramDescription}
+
+═══════════════════════════════════════════════════════════════
+                    VERIFICACIÓN CRÍTICA
+═══════════════════════════════════════════════════════════════
+
+✅ ANTES DE SUGERIR CUALQUIER RELACIÓN:
+1. Lee LÍNEA POR LÍNEA cada relación existente en la sección "🔗 RELACIONES EXISTENTES"
+2. Verifica de A → B (origen → destino) para cada relación
+3. NUNCA sugieras una relación que YA ESTÉ EN ESTA LISTA
+4. Si es N:M, verifica si YA EXISTE una clase intermedia
+
+⚠️ REGLA DE ORO:
+- Si ves "Estudiante --[assoc]--> Curso", NO sugieras "Estudiante a Curso"
+- Si ves "Empleado --[inherit]--> Persona", NO sugieras "Empleado hereda de Persona"
+- Revisa EXACTAMENTE lo que ves, no lo que CREES que debería haber
+
+═══════════════════════════════════════════════════════════════
+                    TU ANÁLISIS DEBE INCLUIR
+═══════════════════════════════════════════════════════════════
+
+1. **DETECTAR EL DOMINIO**: ¿De qué trata este sistema?
+   - Identifica el contexto (tienda, hospital, escuela, etc.)
+   - Resume su propósito en 1 línea
+
+2. **PROBLEMAS ENCONTRADOS** (SOLO SI EXISTEN):
+   - Clases sin atributos o métodos
+   - Clases que deberían estar relacionadas pero NO lo están
+   - Atributos sin tipo de dato
+   - Nombres que no siguen convenciones
+   - Relaciones N:M que necesitan clase intermedia
+   - Clases aisladas (sin ninguna conexión)
+
+3. **CLASES QUE FALTAN** (basadas en el dominio):
+   - Piensa: "¿Qué ACTORES o ENTIDADES del dominio FALTAN?"
+   - Ejemplo (Tienda): si tienes Producto, Cliente, ¿dónde está Empleado? ¿Categoría?
+   - NO dupliques clases existentes
+   - Solo sugiere si es REALMENTE necesaria para el dominio
+
+4. **RELACIONES QUE FALTAN** (VERIFICAR PRIMERO):
+   - Antes de sugerir, verifica que NO EXISTA YA en el diagrama
+   - Piensa en flujos lógicos: ¿Qué debe estar conectado?
+   - Especifica el tipo: herencia, composición, agregación, asociación
+   - Ejemplo: "Cliente y Pedido deberían estar conectados por asociación"
+
+5. **PUNTUACIÓN**: 0-100 basada en:
+   - ✅ Completitud (¿tiene todas las clases del dominio?)
+   - ✅ Calidad de atributos y métodos (¿son realistas?)
+   - ✅ Relaciones correctas (¿están bien conectadas?)
+   - ✅ Coherencia (¿tiene lógica?)
+
+═══════════════════════════════════════════════════════════════
+                    REGLAS CRÍTICAS
+═══════════════════════════════════════════════════════════════
+
+🚫 NUNCA HAGAS ESTO:
+- Sugerir una relación que YA EXISTE en el diagrama
+- Sugerir una clase que YA EXISTE
+- Ignorar las relaciones listadas en "RELACIONES EXISTENTES"
+- Asumir relaciones no explícitas
+
+✅ SIEMPRE HAZ ESTO:
+- Lee y comprende cada relación existente
+- Verifica por nombre exacto (mayúsculas/minúsculas)
+- Compara propuestas con lo existente ANTES de sugerirlas
+- Sé específico en las sugerencias
+
+═══════════════════════════════════════════════════════════════
+                    FORMATO DE RESPUESTA
+═══════════════════════════════════════════════════════════════
+
+RESPONDE EN JSON (VÁLIDO):
+{
+  "score": 75,
+  "detectedDomain": "Sistema de farmacia",
+  "summary": "Resumen del análisis en 2-3 oraciones",
+  "issues": [
+    {
+      "type": "warning",
+      "category": "completeness",
+      "message": "Descripción del problema",
+      "affectedElements": ["Clase1", "Clase2"],
+      "suggestion": "Cómo solucionarlo",
+      "priority": "high"
+    }
+  ],
+  "missingClasses": [
+    {
+      "name": "ClaseQueFalta",
+      "reason": "Por qué debería existir",
+      "attributes": ["+ id: Long", "- nombre: String"],
+      "methods": ["+ guardar(): void"]
+    }
+  ],
+  "missingRelations": [
+    {
+      "from": "ClaseA",
+      "to": "ClaseB",
+      "type": "assoc",
+      "reason": "Por qué deberían estar conectadas (verifica que NO exista ya)"
+    }
+  ],
+  "recommendations": [
+    "Recomendación 1",
+    "Recomendación 2"
+  ]
+}`;
+
+    try {
+      console.log('[AiAssistant] 🩺 Doctor de Diseño analizando...');
+
+      const completion = await this.groq.chat.completions.create({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: 'Analiza este diagrama UML y dame tu diagnóstico profesional.' }
+        ],
+        model: 'llama-3.3-70b-versatile',
+        temperature: 0.3,
+        max_tokens: 4000,
+        response_format: { type: 'json_object' }
+      });
+
+      const rawResponse = completion.choices?.[0]?.message?.content ?? '';
+      console.log('[AiAssistant] 🩺 Diagnóstico recibido:', rawResponse.substring(0, 300));
+
+      const parsed = this.parseAIResponse(rawResponse);
+
+      if (parsed) {
+        // ✅ LIMPIAR sugerencias para evitar duplicados
+        const cleanedParsed = this.cleanDoctorSuggestions(parsed, context);
+        
+        return {
+          score: cleanedParsed.score || 50,
+          issues: cleanedParsed.issues || [],
+          summary: this.formatDoctorSummary(cleanedParsed, context),
+          recommendations: cleanedParsed.recommendations || []
+        };
+      }
+
+      return this.reviewDesignBasic(context);
+
+    } catch (error) {
+      console.error('[AiAssistant] ❌ Error en Doctor de Diseño:', error);
+      return this.reviewDesignBasic(context);
+    }
+  }
+
+  /**
+   * Limpia las sugerencias del Doctor de Diseño para evitar duplicados
+   * Filtra clases y relaciones que YA EXISTEN en el diagrama
+   */
+  private cleanDoctorSuggestions(parsed: any, context: DiagramContext): any {
+    const cleaned = { ...parsed };
+
+    // ✅ Filtrar missingClasses que YA EXISTEN
+    if (Array.isArray(cleaned.missingClasses)) {
+      cleaned.missingClasses = cleaned.missingClasses.filter((cls: any) => {
+        const exists = this.classExists(cls.name, context);
+        if (exists) {
+          console.log(`[cleanDoctorSuggestions] 🚫 Clase ya existe: ${cls.name}`);
+        }
+        return !exists;
+      });
+    }
+
+    // ✅ Filtrar missingRelations que YA EXISTEN
+    if (Array.isArray(cleaned.missingRelations)) {
+      cleaned.missingRelations = cleaned.missingRelations.filter((rel: any) => {
+        const exists = this.relationshipExists(rel.from, rel.to, context);
+        if (exists) {
+          console.log(`[cleanDoctorSuggestions] 🚫 Relación ya existe: ${rel.from} → ${rel.to}`);
+        }
+        return !exists;
+      });
+    }
+
+    return cleaned;
+  }
+
+  // Formato especial para el resumen del Doctor
+  private formatDoctorSummary(parsed: any, context: DiagramContext): string {
+    let summary = `🩺 **Diagnóstico del Diseño**\n\n`;
+
+    // Puntuación con emoji
+    const score = parsed.score || 50;
+    let emoji = '🎉';
+    let status = 'Excelente';
+    if (score < 50) { emoji = '⚠️'; status = 'Necesita trabajo'; }
+    else if (score < 70) { emoji = '🔧'; status = 'Aceptable'; }
+    else if (score < 90) { emoji = '✅'; status = 'Bueno'; }
+
+    summary += `${emoji} **Puntuación: ${score}/100** - ${status}\n\n`;
+
+    // Dominio detectado
+    if (parsed.detectedDomain) {
+      summary += `🎯 **Dominio detectado:** ${parsed.detectedDomain}\n\n`;
+    }
+
+    // Resumen del análisis
+    if (parsed.summary) {
+      summary += `📋 ${parsed.summary}\n\n`;
+    }
+
+    // Clases que faltan
+    if (parsed.missingClasses?.length > 0) {
+      summary += `\n📦 **Clases sugeridas para agregar:**\n`;
+      for (const cls of parsed.missingClasses) {
+        summary += `• **${cls.name}**: ${cls.reason}\n`;
+      }
+    }
+
+    // Relaciones que faltan
+    if (parsed.missingRelations?.length > 0) {
+      summary += `\n🔗 **Relaciones sugeridas:**\n`;
+      for (const rel of parsed.missingRelations) {
+        summary += `• ${rel.from} → ${rel.to} (${rel.type}): ${rel.reason}\n`;
+      }
+    }
+
+    return summary;
+  }
+
+  // Descripción detallada para la revisión
+  private describeDiagramForReview(context: DiagramContext): string {
+    if (context.nodes.length === 0) {
+      return '❌ El diagrama está VACÍO. No hay nada que revisar.';
+    }
+
+    let desc = `📊 **ESTADÍSTICAS:**\n`;
+    desc += `• Total de clases: ${context.nodes.length}\n`;
+    desc += `• Total de relaciones: ${context.edges.length}\n\n`;
+
+    desc += `📦 **CLASES EN EL DIAGRAMA:**\n`;
+    for (const node of context.nodes) {
+      desc += `\n▸ **${node.name}**\n`;
+      if (node.attributes?.length > 0) {
+        desc += `  Atributos (${node.attributes.length}): ${node.attributes.join(', ')}\n`;
+      } else {
+        desc += `  Atributos: ⚠️ NINGUNO\n`;
+      }
+      if (node.methods?.length > 0) {
+        desc += `  Métodos (${node.methods.length}): ${node.methods.join(', ')}\n`;
+      } else {
+        desc += `  Métodos: ⚠️ NINGUNO\n`;
+      }
+    }
+
+    if (context.edges.length > 0) {
+      desc += `\n🔗 **RELACIONES EXISTENTES:**\n`;
+      for (const edge of context.edges) {
+        const src = context.nodes.find(n => n.id === edge.source)?.name || '?';
+        const tgt = context.nodes.find(n => n.id === edge.target)?.name || '?';
+        const labels = edge.labels?.join(', ') || '';
+        desc += `• ${src} --[${edge.type}${labels ? `: ${labels}` : ''}]--> ${tgt}\n`;
+      }
+    } else {
+      desc += `\n🔗 **RELACIONES:** ⚠️ NINGUNA - Las clases no están conectadas\n`;
+    }
+
+    return desc;
+  }
+
+  // Análisis básico sin IA (fallback)
+  private reviewDesignBasic(context: DiagramContext): {
+    score: number;
+    issues: DesignIssue[];
+    summary: string;
+    recommendations: string[];
+  } {
+    const issues: DesignIssue[] = [];
+    let score = 100;
+
+    // Verificar clases vacías
+    const emptyClasses = context.nodes.filter(n =>
+      (!n.attributes || n.attributes.length === 0) &&
+      (!n.methods || n.methods.length === 0)
+    );
+
+    if (emptyClasses.length > 0) {
+      issues.push({
+        type: 'warning',
+        category: 'completeness',
+        message: `${emptyClasses.length} clase(s) sin atributos ni métodos`,
+        affectedElements: emptyClasses.map(n => n.name),
+        suggestion: 'Agrega atributos y métodos a estas clases',
+        priority: 'high'
+      });
+      score -= emptyClasses.length * 10;
+    }
+
+    // Verificar clases aisladas
+    const unconnectedClasses = context.nodes.filter(n =>
+      !context.edges.some(e => e.source === n.id || e.target === n.id)
+    );
+
+    if (unconnectedClasses.length > 0 && context.nodes.length > 1) {
+      issues.push({
+        type: 'warning',
+        category: 'relationships',
+        message: `${unconnectedClasses.length} clase(s) sin relaciones`,
+        affectedElements: unconnectedClasses.map(n => n.name),
+        suggestion: 'Conecta estas clases con las demás',
+        priority: 'medium'
+      });
+      score -= unconnectedClasses.length * 5;
+    }
+
+    score = Math.max(0, Math.min(100, score));
+
+    return {
+      score,
+      issues,
+      summary: `Análisis básico: ${context.nodes.length} clases, ${context.edges.length} relaciones. Puntuación: ${score}/100`,
+      recommendations: issues.length > 0
+        ? ['Corrige los problemas detectados antes de continuar']
+        : ['El diagrama se ve bien. Considera agregar más detalles.']
+    };
+  }
+
+  private generateDesignSummary(context: DiagramContext, issues: DesignIssue[], score: number): string {
+    const classCount = context.nodes.length;
+    const relationCount = context.edges.length;
+    const errorCount = issues.filter(i => i.type === 'error').length;
+    const warningCount = issues.filter(i => i.type === 'warning').length;
+
+    let emoji = '🎉';
+    let status = 'Excelente';
+    if (score < 50) { emoji = '⚠️'; status = 'Necesita mejoras'; }
+    else if (score < 70) { emoji = '🔧'; status = 'Aceptable'; }
+    else if (score < 90) { emoji = '✅'; status = 'Bueno'; }
+
+    return `${emoji} **Diagnóstico del Diseño: ${status}** (${score}/100)\n\n` +
+           `📊 **Estadísticas:**\n` +
+           `• Clases: ${classCount}\n` +
+           `• Relaciones: ${relationCount}\n` +
+           `• Problemas encontrados: ${errorCount} errores, ${warningCount} advertencias\n\n` +
+           `${issues.length === 0 ? '✨ ¡No se encontraron problemas!' : ''}`;
+  }
+
+  private generateRecommendations(context: DiagramContext, issues: DesignIssue[]): string[] {
+    const recommendations: string[] = [];
+
+    if (context.nodes.length === 0) {
+      recommendations.push('Comienza creando 2-3 clases principales de tu dominio');
+    } else if (context.nodes.length < 3) {
+      recommendations.push('Considera agregar más clases para un modelo más completo');
+    }
+
+    if (context.edges.length === 0 && context.nodes.length >= 2) {
+      recommendations.push('Conecta tus clases con relaciones (asociación, herencia, composición)');
+    }
+
+    const highPriorityIssues = issues.filter(i => i.priority === 'high');
+    if (highPriorityIssues.length > 0) {
+      recommendations.push('Resuelve primero los problemas de alta prioridad marcados arriba');
+    }
+
+    if (context.nodes.length >= 3 && context.edges.length >= 2) {
+      recommendations.push('Tu diagrama tiene buena estructura base. Revisa las cardinalidades');
+    }
+
+    return recommendations;
+  }
+
+  // ================== HISTORIAL DE CONVERSACIÓN (5A) ==================
+
+  /**
+   * Guarda un mensaje en el historial de conversación
+   */
+  saveToHistory(sessionId: string, role: 'user' | 'assistant', content: string, mentionedClasses?: string[]): void {
+    if (!this.conversationHistory.has(sessionId)) {
+      this.conversationHistory.set(sessionId, []);
+    }
+
+    const history = this.conversationHistory.get(sessionId)!;
+    history.push({
+      role,
+      content,
+      timestamp: new Date(),
+      context: {
+        mentionedClasses,
+        lastCreatedClass: mentionedClasses?.[0]
+      }
+    });
+
+    // Mantener solo los últimos 20 mensajes
+    if (history.length > 20) {
+      history.shift();
+    }
+
+    // Actualizar última clase mencionada
+    if (mentionedClasses?.length) {
+      this.lastMentionedClass.set(sessionId, mentionedClasses[0]);
+    }
+  }
+
+  /**
+   * Obtiene el contexto del historial para referencias implícitas
+   */
+  getConversationContext(sessionId: string): { lastMentionedClass?: string; recentClasses: string[] } {
+    const history = this.conversationHistory.get(sessionId) || [];
+    const recentClasses: string[] = [];
+
+    for (const msg of history.slice(-5)) {
+      if (msg.context?.mentionedClasses) {
+        recentClasses.push(...msg.context.mentionedClasses);
+      }
+    }
+
+    return {
+      lastMentionedClass: this.lastMentionedClass.get(sessionId),
+      recentClasses: [...new Set(recentClasses)]
+    };
+  }
+
+  // ================== MÉTODOS AUXILIARES ==================
+
+  private buildDiagramSummary(context: DiagramContext): string {
+    if (context.nodes.length === 0) {
+      return 'El diagrama está vacío.';
+    }
+
+    const classesSummary = context.nodes.map(n =>
+      `- ${n.name}: ${n.attributes?.length || 0} atributos, ${n.methods?.length || 0} métodos`
+    ).join('\n');
+
+    const relationsSummary = context.edges.map(e => {
+      const source = context.nodes.find(n => n.id === e.source);
+      const target = context.nodes.find(n => n.id === e.target);
+      return `- ${source?.name || '?'} --[${e.type}]--> ${target?.name || '?'}`;
+    }).join('\n');
+
+    return `Clases (${context.nodes.length}):\n${classesSummary}\n\nRelaciones (${context.edges.length}):\n${relationsSummary || 'Ninguna'}`;
+  }
+
+  private buildHistoryContext(history: ConversationMessage[]): string {
+    if (history.length === 0) return 'Sin historial previo.';
+
+    return history.map(m => `${m.role}: ${m.content.substring(0, 100)}...`).join('\n');
+  }
+
+  private extractAttributes(message: string): string[] {
+    const attributes: string[] = [];
+
+    // Patrón: "con atributos X, Y, Z" o "atributos: X, Y, Z"
+    const attrMatch = message.match(/(?:con\s+)?atributos?\s*[:\-]?\s*([^.;\n]+)/i);
+    if (attrMatch) {
+      const rawAttrs = attrMatch[1].split(/[,y]/i);
+      for (const attr of rawAttrs) {
+        const cleaned = attr.trim();
+        if (cleaned) {
+          // Si no tiene tipo, agregar String por defecto
+          if (!cleaned.includes(':')) {
+            attributes.push(`${this.safeId(cleaned)}: String`);
+          } else {
+            attributes.push(cleaned);
+          }
+        }
+      }
+    }
+
+    return attributes;
+  }
+
+  private extractMethods(message: string): string[] {
+    const methods: string[] = [];
+
+    const methodMatch = message.match(/(?:con\s+)?m[eé]todos?\s*[:\-]?\s*([^.;\n]+)/i);
+    if (methodMatch) {
+      const rawMethods = methodMatch[1].split(/[,y]/i);
+      for (const method of rawMethods) {
+        let cleaned = method.trim();
+        if (cleaned && !cleaned.includes('(')) {
+          cleaned = `${cleaned}()`;
+        }
+        if (cleaned) {
+          methods.push(cleaned);
+        }
+      }
+    }
+
+    return methods;
+  }
+
+  private findClassInMessage(message: string, context: DiagramContext): string | undefined {
+    const normalized = this.normalize(message);
+
+    for (const node of context.nodes) {
+      if (normalized.includes(this.normalize(node.name))) {
+        return node.name;
+      }
+    }
+
+    // Buscar patrones como "a la clase X" o "en X"
+    const classMatch = message.match(/(?:a\s+(?:la\s+)?clase|en)\s+([A-Za-z][A-Za-z0-9_]*)/i);
+    if (classMatch) {
+      const foundName = classMatch[1];
+      const existingNode = context.nodes.find(n =>
+        this.normalize(n.name) === this.normalize(foundName)
+      );
+      if (existingNode) return existingNode.name;
+    }
+
+    return undefined;
+  }
+
+  private extractRelationInfo(message: string, context: DiagramContext): {
+    from?: string;
+    to?: string;
+    type: string;
+    isNtoM: boolean;
+  } {
+    const normalized = this.normalize(message);
+
+    // Detectar tipo de relación
+    let type = 'assoc';
+    if (normalized.includes('herencia') || normalized.includes('hereda') || normalized.includes('extiende')) {
+      type = 'inherit';
+    } else if (normalized.includes('composicion') || normalized.includes('compone') || normalized.includes('parte de')) {
+      type = 'comp';
+    } else if (normalized.includes('agregacion') || normalized.includes('tiene') || normalized.includes('contiene')) {
+      type = 'aggr';
+    } else if (normalized.includes('muchos a muchos') || normalized.includes('n a m')) {
+      type = 'many-to-many';
+    }
+
+    // Extraer clases
+    const pattern = /(?:de|desde)\s+([A-Za-z]\w*)\s+(?:a|hacia|con)\s+([A-Za-z]\w*)/i;
+    const match = message.match(pattern);
+
+    let from: string | undefined;
+    let to: string | undefined;
+
+    if (match) {
+      from = match[1];
+      to = match[2];
+    } else {
+      // Buscar nombres de clases existentes en el mensaje
+      const foundClasses: string[] = [];
+      for (const node of context.nodes) {
+        if (normalized.includes(this.normalize(node.name))) {
+          foundClasses.push(node.name);
+        }
+      }
+      if (foundClasses.length >= 2) {
+        from = foundClasses[0];
+        to = foundClasses[1];
+      }
+    }
+
+    // Detectar si es N:M
+    const isNtoM = type === 'many-to-many' ||
+                   (normalized.includes('muchos') && normalized.split('muchos').length > 2);
+
+    return { from, to, type, isNtoM };
+  }
 
   /**
    * Convierte el resultado del scan de imagen en sugerencias del asistente
@@ -193,14 +1300,566 @@ export class AiAssistantService {
   async getContextualHelp(
     context: DiagramContext,
     userMessage?: string,
+    sessionId: string = 'default',
   ): Promise<AssistantResponse> {
     const analysis = this.analyzeDiagramState(context);
 
     if (userMessage && userMessage.trim()) {
-      return this.handleUserMessage(userMessage, context, analysis);
+      // Guardar mensaje del usuario en el historial
+      this.saveToHistory(sessionId, 'user', userMessage);
+
+      // =====================================================
+      // CEREBRO IA: Todo pasa por el LLM directamente
+      // =====================================================
+      const response = await this.processWithAI(userMessage, context, sessionId);
+
+      // Guardar respuesta en el historial
+      const mentionedClasses = response.suggestions?.classes?.map(c => c.name) || [];
+      this.saveToHistory(sessionId, 'assistant', response.message, mentionedClasses);
+
+      return response;
     }
 
     return this.generateProactiveGuidance(context, analysis);
+  }
+
+  // =====================================================
+  // CEREBRO IA PRINCIPAL - Procesa CUALQUIER solicitud
+  // =====================================================
+  private async processWithAI(
+    userMessage: string,
+    context: DiagramContext,
+    sessionId: string
+  ): Promise<AssistantResponse> {
+
+    // Si no hay API key de Groq, usar fallback
+    if (!this.groq) {
+      console.log('[AiAssistant] Sin GROQ_API_KEY, usando fallback básico');
+      return this.handleUserMessage(userMessage, context, this.analyzeDiagramState(context));
+    }
+
+    // Construir descripción del diagrama actual
+    const diagramDescription = this.describeDiagramForAI(context);
+    const conversationHistory = this.getRecentHistory(sessionId);
+
+    // Detectar si es una solicitud de revisión de diseño
+    const normalizedMsg = userMessage.toLowerCase();
+    const isReviewRequest = normalizedMsg.includes('revisar') ||
+                            normalizedMsg.includes('doctor') ||
+                            normalizedMsg.includes('evaluar') ||
+                            normalizedMsg.includes('diagnostico') ||
+                            normalizedMsg.includes('analizar diseño') ||
+                            normalizedMsg.includes('que falta') ||
+                            normalizedMsg.includes('problemas') ||
+                            normalizedMsg.includes('esta bien');
+
+    // Si es revisión, usar el Doctor de Diseño
+    if (isReviewRequest) {
+      console.log('[AiAssistant] 🩺 Detectada solicitud de revisión, usando Doctor de Diseño');
+      const review = await this.reviewDesign(context);
+      return {
+        message: review.summary,
+        tips: review.recommendations
+        // NO incluir suggestions para que no se apliquen automáticamente
+      };
+    }
+
+    const systemPrompt = `Eres un EXPERTO en diseño UML y arquitectura de software. Ayudas a crear diagramas de clases profesionales.
+
+═══════════════════════════════════════════════════════════════
+                    DIAGRAMA ACTUAL
+═══════════════════════════════════════════════════════════════
+${diagramDescription}
+
+═══════════════════════════════════════════════════════════════
+                 HISTORIAL DE CONVERSACIÓN
+═══════════════════════════════════════════════════════════════
+${conversationHistory}
+
+═══════════════════════════════════════════════════════════════
+                      TUS CAPACIDADES
+═══════════════════════════════════════════════════════════════
+
+1. **CREAR CLASES**: Cuando el usuario pida crear clases o un sistema:
+   - Genera clases completas con atributos tipados profesionalmente.
+   - Incluye métodos CRUD y de negocio relevantes.
+   - Usa visibilidad UML: + público, - privado, # protegido.
+   - NUNCA crees una clase que ya exista en el diagrama.
+
+2. **CREAR RELACIONES**: Determina el tipo correcto:
+   - "inherit": Herencia (A ES UN tipo de B) - Ejemplo: Empleado hereda de Persona.
+   - "comp": Composición (A NO PUEDE existir sin B, la existencia de la parte depende del todo) - Ejemplo: Motor es **parte esencial e inseparable** de Auto; el Motor se destruye si el Auto se destruye.
+   - "aggr": Agregación (A CONTIENE B pero pueden existir solos, la parte puede existir independientemente del todo) - Ejemplo: Universidad tiene Estudiantes; los Estudiantes existen aunque la Universidad no.
+   - "assoc": Asociación simple (relación general, conexión sin fuerte dependencia) - Ejemplo: Cliente realiza Pedido.
+   - "dep": Dependencia (uso temporal, un cambio en A puede afectar a B pero no viceversa) - Ejemplo: Controlador usa Servicio.
+   - NUNCA crees una relación que ya exista entre dos clases.
+
+3. **DETECTAR N:M (Muchos a Muchos)**:
+   - Si la descripción del usuario implica una relación muchos-a-muchos (ej: "Estudiante **muchos** Cursos y Curso **muchos** Estudiantes", "varios Autores escriben varios Libros"), **SIEMPRE** debes sugerir la creación de una **clase intermedia**.
+   - La clase intermedia debe tener un nombre relevante que refleje la acción o concepto de la relación (ej: Inscripcion, Contratacion, Asignacion, Autoria).
+   - Esta clase intermedia debe tener dos asociaciones simples con multiplicidad 1 a * (uno a muchos) hacia las clases originales, en lugar de la relación N:M directa.
+   - Ejemplo: Estudiante ↔ Curso → crea **"Inscripcion"** con atributos como fechaInscripcion: Date, calificacion: Double.
+     Relaciones resultantes:
+       - Estudiante 1 -- * Inscripcion
+       - Curso 1 -- * Inscripcion
+
+4. **GENERAR SISTEMAS COMPLETOS**: Si piden "sistema de farmacia", "tienda", etc:
+   - Genera TODAS las clases necesarias (5-10 clases típicamente).
+   - Incluye todas las relaciones entre ellas.
+   - Agrega clases intermedias donde sea necesario, siguiendo la regla de N:M.
+
+REGLAS CRÍTICAS:
+- NUNCA dupliques clases que ya existen en el diagrama.
+- NUNCA crees relaciones que ya existen.
+- Revisa el DIAGRAMA ACTUAL antes de sugerir algo.
+- Para la composición, busca una dependencia fuerte de existencia (la parte no vive sin el todo).
+
+═══════════════════════════════════════════════════════════════
+                    FORMATO DE RESPUESTA
+═══════════════════════════════════════════════════════════════
+
+RESPONDE SIEMPRE en JSON con esta estructura:
+
+{
+  "message": "Explicación para el usuario en español (usa **negritas** y formato markdown)",
+  "suggestions": {
+    "classes": [
+      {
+        "name": "NombreClase",
+        "attributes": [
+          "+ id: Long",
+          "- nombre: String",
+          "- email: String",
+          "- fechaCreacion: Date"
+        ],
+        "methods": [
+          "+ getNombre(): String",
+          "+ setNombre(nombre: String): void",
+          "+ validarEmail(): Boolean",
+          "+ guardar(): void"
+        ]
+      }
+    ],
+    "relations": [
+      {
+        "from": "ClaseOrigen",
+        "to": "ClaseDestino",
+        "type": "assoc", // o comp, aggr, inherit, dep
+        "multiplicity": {"source": "1", "target": "*"} // OPCIONAL: si se especifica en la solicitud
+      }
+    ]
+  },
+  "tips": ["Consejo práctico 1", "Consejo práctico 2"],
+  "nextSteps": ["Siguiente paso 1", "Siguiente paso 2"]
+}
+
+IMPORTANTE:
+- Si el usuario hace una pregunta simple, responde solo con "message".
+- Si pide crear algo, SIEMPRE incluye "suggestions" con las clases/relaciones.
+- Genera atributos y métodos REALES y ÚTILES, no genéricos.
+- NUNCA incluyas clases o relaciones que YA EXISTEN en el diagrama.
+- Cuando sugieras una relación de Composición, explícita que la parte se destruye con el todo.
+- Asegúrate de que las multiplicidades sean coherentes con el tipo de relación (ej. para composición el lado del "todo" suele ser 1).
+`;
+
+    try {
+      console.log('[AiAssistant] 🧠 Enviando a LLM:', userMessage.substring(0, 100));
+
+      const completion = await this.groq.chat.completions.create({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userMessage }
+        ],
+        model: 'llama-3.3-70b-versatile',
+        temperature: 0.4,
+        max_tokens: 6000,
+        response_format: { type: 'json_object' }
+      });
+
+      const rawResponse = completion.choices?.[0]?.message?.content ?? '';
+      console.log('[AiAssistant] 🤖 Respuesta LLM:', rawResponse.substring(0, 300));
+
+      // Parsear respuesta JSON
+      const parsed = this.parseAIResponse(rawResponse);
+
+      if (parsed) {
+        return this.normalizeAssistantResponse(parsed, context);
+      }
+
+      return { message: rawResponse || 'No pude procesar la solicitud.' };
+
+    } catch (error) {
+      console.error('[AiAssistant] ❌ Error LLM:', error);
+      return this.handleUserMessage(userMessage, context, this.analyzeDiagramState(context));
+    }
+  }
+
+  // Describe el diagrama para el LLM
+  private describeDiagramForAI(context: DiagramContext): string {
+    if (context.nodes.length === 0) {
+      return '📭 El diagrama está VACÍO. No hay clases todavía.';
+    }
+
+    let desc = `📊 ${context.nodes.length} clases, ${context.edges.length} relaciones\n\n`;
+
+    desc += '📦 CLASES:\n';
+    for (const node of context.nodes) {
+      desc += `\n• ${node.name}\n`;
+      desc += `  Atributos: ${node.attributes?.length > 0 ? node.attributes.join(', ') : '(vacío)'}\n`;
+      desc += `  Métodos: ${node.methods?.length > 0 ? node.methods.join(', ') : '(vacío)'}\n`;
+    }
+
+    if (context.edges.length > 0) {
+      desc += '\n🔗 RELACIONES:\n';
+      for (const edge of context.edges) {
+        const src = context.nodes.find(n => n.id === edge.source)?.name || '?';
+        const tgt = context.nodes.find(n => n.id === edge.target)?.name || '?';
+        desc += `• ${src} --[${edge.type}]--> ${tgt}\n`;
+      }
+    }
+
+    return desc;
+  }
+
+  // Historial reciente para contexto
+  private getRecentHistory(sessionId: string): string {
+    const history = this.conversationHistory.get(sessionId) || [];
+    if (history.length === 0) return 'Primera interacción.';
+
+    return history.slice(-4).map(m => {
+      const role = m.role === 'user' ? '👤' : '🤖';
+      const text = m.content.length > 100 ? m.content.substring(0, 100) + '...' : m.content;
+      return `${role}: ${text}`;
+    }).join('\n');
+  }
+
+  // Parsear respuesta JSON del LLM
+  private parseAIResponse(raw: string): any {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (match) {
+        try { return JSON.parse(match[0]); } catch { return null; }
+      }
+      return null;
+    }
+  }
+
+  // Normalizar respuesta al formato AssistantResponse
+  private normalizeAssistantResponse(parsed: any, context?: DiagramContext): AssistantResponse {
+    const response: AssistantResponse = {
+      message: parsed.message || 'Listo.'
+    };
+
+    // ✅ FILTRAR clases que YA EXISTEN
+    if (parsed.suggestions?.classes?.length > 0 && context) {
+      const filteredClasses = parsed.suggestions.classes.filter((c: any) => {
+        const classAlreadyExists = this.classExists(c.name, context);
+        if (classAlreadyExists) {
+          console.log(`[normalizeAssistantResponse] 🚫 Filtrando clase existente: ${c.name}`);
+          return false;
+        }
+        return true;
+      });
+
+      if (filteredClasses.length > 0) {
+        response.suggestions = response.suggestions || {};
+        response.suggestions.classes = filteredClasses.map((c: any) => ({
+          name: c.name || 'Clase',
+          attributes: Array.isArray(c.attributes) ? c.attributes : [],
+          methods: Array.isArray(c.methods) ? c.methods : []
+        }));
+      }
+    } else if (parsed.suggestions?.classes?.length > 0) {
+      // Si no hay contexto, confiar en que el LLM no duplicó
+      response.suggestions = response.suggestions || {};
+      response.suggestions.classes = parsed.suggestions.classes.map((c: any) => ({
+        name: c.name || 'Clase',
+        attributes: Array.isArray(c.attributes) ? c.attributes : [],
+        methods: Array.isArray(c.methods) ? c.methods : []
+      }));
+    }
+
+    // ✅ FILTRAR relaciones que YA EXISTEN
+    if (parsed.suggestions?.relations?.length > 0 && context) {
+      response.suggestions = response.suggestions || {};
+      // Filtrar relaciones que YA EXISTEN
+      const filteredRelations = parsed.suggestions.relations.filter((r: any) => {
+        const relationExists = this.relationshipExists(r.from, r.to, context);
+        if (relationExists) {
+          console.log(`[normalizeAssistantResponse] 🚫 Filtrando relación existente: ${r.from} → ${r.to}`);
+          return false;
+        }
+        return true;
+      });
+
+      if (filteredRelations.length > 0) {
+        response.suggestions.relations = filteredRelations.map((r: any) => ({
+          from: r.from,
+          to: r.to,
+          type: r.type || 'assoc',
+          multiplicity: r.multiplicity
+        }));
+      }
+    } else if (parsed.suggestions?.relations?.length > 0) {
+      // Si no hay contexto, confiar en que el LLM no duplicó
+      response.suggestions = response.suggestions || {};
+      response.suggestions.relations = parsed.suggestions.relations.map((r: any) => ({
+        from: r.from,
+        to: r.to,
+        type: r.type || 'assoc',
+        multiplicity: r.multiplicity
+      }));
+    }
+
+    if (Array.isArray(parsed.tips)) response.tips = parsed.tips;
+    if (Array.isArray(parsed.nextSteps)) response.nextSteps = parsed.nextSteps;
+
+    return response;
+  }
+
+  /**
+   * Maneja el mensaje del usuario basándose en la intención detectada por IA
+   */
+  private async handleIntentBasedMessage(
+    message: string,
+    context: DiagramContext,
+    analysis: ReturnType<AiAssistantService['analyzeDiagramState']>,
+    intent: IntentAnalysis,
+    sessionId: string
+  ): Promise<AssistantResponse> {
+
+    // ================== DOCTOR DE DISEÑO ==================
+    if (intent.intent === 'review_design') {
+      const review = await this.reviewDesign(context);
+
+      let issuesText = '';
+      for (const issue of review.issues) {
+        const icon = issue.type === 'error' ? '❌' : issue.type === 'warning' ? '⚠️' : '💡';
+        const priority = issue.priority === 'high' ? '🔴' : issue.priority === 'medium' ? '🟡' : '🟢';
+        issuesText += `\n${icon} ${priority} **${issue.message}**\n`;
+        issuesText += `   → Afecta: ${issue.affectedElements.join(', ')}\n`;
+        if (issue.suggestion) {
+          issuesText += `   → Sugerencia: ${issue.suggestion}\n`;
+        }
+      }
+
+      return {
+        message: `🩺 **Doctor de Diseño UML**\n\n${review.summary}\n${issuesText}\n📋 **Recomendaciones:**\n${review.recommendations.map(r => '• ' + r).join('\n')}`,
+        tips: [
+          `📊 Puntuación: ${review.score}/100`,
+          '🔧 Resuelve los problemas de alta prioridad primero',
+          '💡 Pregúntame si necesitas ayuda con algún problema específico'
+        ],
+        contextualHelp: [
+          {
+            action: 'fix_issues',
+            description: 'Corregir problemas detectados',
+            shortcut: 'Te ayudo a resolver los problemas uno por uno',
+            priority: 'high' as const
+          }
+        ]
+      };
+    }
+
+    // ================== CREAR CLASE ==================
+    if (intent.intent === 'create_class' && intent.entities.className) {
+      const className = intent.entities.className;
+      const attrs = intent.entities.attributes || ['id: Long', 'nombre: String'];
+      const methods = intent.entities.methods || [`get${className}()`, `set${className}()`, 'save()', 'delete()'];
+
+      // Sugerencias proactivas de relaciones (3B)
+      const relationSuggestions = this.suggestRelationsForNewClass(className, attrs, context);
+
+      let relationMessage = '';
+      const suggestedRelations: Array<{ from: string; to: string; type: string; multiplicity?: { source?: string; target?: string } }> = [];
+
+      if (relationSuggestions.length > 0) {
+        relationMessage = '\n\n🔗 **Sugerencias de relaciones:**\n';
+        for (const rel of relationSuggestions) {
+          relationMessage += `• ${rel.explanation}\n`;
+          suggestedRelations.push({
+            from: rel.from,
+            to: rel.to,
+            type: rel.type,
+            multiplicity: rel.multiplicity
+          });
+        }
+      }
+
+      return {
+        message: `✨ **Creando clase ${className}**\n\nLa clase se creará con:\n• **${attrs.length}** atributos\n• **${methods.length}** métodos${relationMessage}`,
+        suggestions: {
+          classes: [{
+            name: className,
+            attributes: attrs,
+            methods: methods
+          }],
+          relations: suggestedRelations.length > 0 ? suggestedRelations : undefined
+        },
+        tips: [
+          '✏️ Puedes editar la clase después de crearla',
+          '🔗 Usa los botones de relación sugeridos para conectarla'
+        ],
+        nextSteps: [
+          '1. Haz clic en "Agregar" para crear la clase',
+          '2. Revisa las relaciones sugeridas',
+          '3. Personaliza atributos si es necesario'
+        ]
+      };
+    }
+
+    // ================== EDITAR CLASE ==================
+    if (intent.intent === 'edit_class') {
+      let targetClassName = intent.entities.className;
+
+      // Si no se especificó clase, usar la última mencionada
+      if (!targetClassName) {
+        const convContext = this.getConversationContext(sessionId);
+        targetClassName = convContext.lastMentionedClass;
+      }
+
+      if (!targetClassName) {
+        return {
+          message: '❓ No encontré la clase a editar. ¿Cuál clase quieres modificar?\n\n**Clases disponibles:**\n' +
+                   context.nodes.map(n => `• ${n.name}`).join('\n'),
+          tips: ['Especifica el nombre de la clase, ej: "agrega email a Usuario"']
+        };
+      }
+
+      const targetNode = context.nodes.find(n =>
+        this.normalize(n.name) === this.normalize(targetClassName)
+      );
+
+      if (!targetNode) {
+        return {
+          message: `❌ No encontré la clase "${targetClassName}" en el diagrama.\n\n**Clases disponibles:**\n${context.nodes.map(n => `• ${n.name}`).join('\n')}`,
+          tips: ['Verifica el nombre exacto de la clase']
+        };
+      }
+
+      const newAttrs = intent.entities.attributes || [];
+      const newMethods = intent.entities.methods || [];
+
+      // Combinar con existentes sin duplicar
+      const currentAttrs = targetNode.attributes || [];
+      const currentMethods = targetNode.methods || [];
+
+      const existingAttrNames = new Set(currentAttrs.map(a => a.split(':')[0].trim().toLowerCase()));
+      const filteredNewAttrs = newAttrs.filter(a => !existingAttrNames.has(a.split(':')[0].trim().toLowerCase()));
+
+      const existingMethodNames = new Set(currentMethods.map(m => m.split('(')[0].trim().toLowerCase()));
+      const filteredNewMethods = newMethods.filter(m => !existingMethodNames.has(m.split('(')[0].trim().toLowerCase()));
+
+      if (filteredNewAttrs.length === 0 && filteredNewMethods.length === 0) {
+        return {
+          message: `⚠️ Los elementos que intentas agregar ya existen en "${targetClassName}".\n\n**Atributos actuales:**\n${currentAttrs.join('\n') || '(ninguno)'}\n\n**Métodos actuales:**\n${currentMethods.join('\n') || '(ninguno)'}`,
+          tips: ['Intenta con nombres diferentes']
+        };
+      }
+
+      const allAttrs = [...currentAttrs, ...filteredNewAttrs];
+      const allMethods = [...currentMethods, ...filteredNewMethods];
+
+      return {
+        message: `✏️ **Actualizando clase "${targetClassName}":**\n\n` +
+                 (filteredNewAttrs.length > 0 ? `➕ Atributos nuevos: ${filteredNewAttrs.join(', ')}\n` : '') +
+                 (filteredNewMethods.length > 0 ? `➕ Métodos nuevos: ${filteredNewMethods.join(', ')}\n` : ''),
+        suggestions: {
+          classes: [{
+            name: targetClassName,
+            attributes: allAttrs,
+            methods: allMethods
+          }]
+        },
+        tips: [`🔧 nodeId=${targetNode.id}`]
+      };
+    }
+
+    // ================== CREAR RELACIÓN ==================
+    if (intent.intent === 'create_relation') {
+      const from = intent.entities.className;
+      const to = intent.entities.targetClassName;
+      const type = intent.entities.relationType || 'assoc';
+
+      if (!from || !to) {
+        return {
+          message: '❓ No pude identificar las clases para la relación.\n\n**Usa un formato como:**\n• "Conecta Usuario con Pedido"\n• "Crea herencia de Empleado a Persona"\n• "Estudiante tiene muchos Cursos"',
+          tips: ['Menciona ambas clases claramente']
+        };
+      }
+
+      // Verificar si existe relación N:M y sugerir clase intermedia (2A)
+      if (intent.requiresIntermediateClass) {
+        const suggestedIntermediate = intent.suggestedIntermediateClass || this.suggestIntermediateClassName(from, to);
+        const nToMResult = {
+          isNtoM: true,
+          intermediateClass: {
+            name: suggestedIntermediate,
+            attributes: this.suggestIntermediateAttributes(from, to, suggestedIntermediate),
+            methods: ['registrar()', 'cancelar()', 'obtenerDetalles()']
+          }
+        };
+
+        return {
+          message: `🔗 **Relación muchos-a-muchos detectada**\n\n` +
+                   `${from} ↔ ${to}\n\n` +
+                   `💡 **Sugerencia:** Crear clase intermedia **"${nToMResult.intermediateClass.name}"**\n\n` +
+                   `Esta clase permitirá almacenar información adicional de la relación.`,
+          suggestions: {
+            classes: [nToMResult.intermediateClass],
+            relations: [
+              { from: from, to: nToMResult.intermediateClass.name, type: 'assoc', multiplicity: { source: '1', target: '*' } },
+              { from: nToMResult.intermediateClass.name, to: to, type: 'assoc', multiplicity: { source: '*', target: '1' } }
+            ]
+          },
+          tips: [
+            '📊 Las relaciones N:M suelen necesitar clases intermedias',
+            '💾 La clase intermedia puede guardar datos como fecha, estado, cantidad, etc.'
+          ],
+          nextSteps: [
+            `1. Crea la clase "${nToMResult.intermediateClass.name}"`,
+            '2. Conecta las tres clases con asociaciones',
+            '3. Agrega atributos específicos a la clase intermedia'
+          ]
+        };
+      }
+
+      // Relación normal
+      const relationNames: Record<string, string> = {
+        'assoc': 'Asociación',
+        'inherit': 'Herencia',
+        'comp': 'Composición',
+        'aggr': 'Agregación',
+        'dep': 'Dependencia',
+        'many-to-many': 'Muchos a Muchos'
+      };
+
+      return {
+        message: `🔗 **Creando ${relationNames[type] || 'Asociación'}:**\n\n📍 ${from} → ${to}`,
+        suggestions: {
+          relations: [{
+            from,
+            to,
+            type
+          }]
+        },
+        tips: ['✅ La relación se aplicará automáticamente']
+      };
+    }
+
+    // ================== GENERAR SISTEMA ==================
+    if (intent.intent === 'generate_system' && intent.entities.systemDomain) {
+      // Usar el método existente de detección de dominios
+      const domainResponse = this.detectDomainAndSuggest(this.normalize(message), message);
+      if (domainResponse) {
+        return domainResponse;
+      }
+    }
+
+    // ================== FALLBACK: usar el handler original mejorado ==================
+    return this.handleUserMessage(message, context, analysis);
   }
 
   // -------------------- ANALISIS DEL DIAGRAMA --------------------

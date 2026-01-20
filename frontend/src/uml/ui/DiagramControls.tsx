@@ -5,7 +5,14 @@ import { MiniMap as X6MiniMap } from "@antv/x6-plugin-minimap";
 import { Export } from "@antv/x6-plugin-export";
 import type { Tool } from "./Sidebar";
 import { IconCenter, IconCursor, IconZoomIn, IconZoomOut } from "../icons";
-import { Save, Share2, Download, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  Save,
+  Share2,
+  Download,
+  ChevronDown,
+  ChevronUp,
+  Sparkles,
+} from "lucide-react";
 import toast from "react-hot-toast";
 
 type Props = {
@@ -13,6 +20,7 @@ type Props = {
   tool: Tool;
   onToolClick: (t: Tool) => void;
   onSave?: () => Promise<void>;
+  onAutoLayout?: () => void;
   disabled?: boolean;
   exportName?: string;
   onGetShareLink?: () => Promise<string>;
@@ -37,6 +45,7 @@ export default function DiagramControls({
   tool,
   onToolClick,
   onSave,
+  onAutoLayout,
   disabled = false,
   exportName = "diagram",
   onGetShareLink,
@@ -372,6 +381,17 @@ export default function DiagramControls({
           >
             <IconCenter className="h-5 w-5" />
           </button>
+
+          {onAutoLayout && (
+            <button
+              onClick={onAutoLayout}
+              disabled={toolbarDisabled}
+              title="Organizar"
+              className="btn-ghost !rounded-lg !p-2"
+            >
+              <Sparkles className="h-5 w-5" />
+            </button>
+          )}
 
           {/* Guardar */}
           {onSave && (

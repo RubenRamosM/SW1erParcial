@@ -149,7 +149,7 @@ export class AiController {
 
   @Post('asistente')
   async getAssistantHelp(
-    @Body() body: { context: DiagramContext; message?: string },
+    @Body() body: { context: DiagramContext; message?: string; sessionId?: string },
   ): Promise<AssistantResponse> {
     // 🔍 DEBUG: Log para verificar que llega el contexto
     this.logger.log('[AI Controller] Petición recibida:', {
@@ -157,8 +157,34 @@ export class AiController {
       nodeCount: body.context?.nodes?.length || 0,
       edgeCount: body.context?.edges?.length || 0,
       message: body.message || '(sin mensaje)',
+      sessionId: body.sessionId || 'default',
     });
 
-    return this.assistantService.getContextualHelp(body.context, body.message);
+    return this.assistantService.getContextualHelp(
+      body.context,
+      body.message,
+      body.sessionId || 'default'
+    );
+  }
+
+  @Post('review-design')
+  async reviewDesign(
+    @Body() body: { context: DiagramContext },
+  ): Promise<AssistantResponse> {
+    this.logger.log('[AI Controller] Revisión de diseño solicitada:', {
+      nodeCount: body.context?.nodes?.length || 0,
+      edgeCount: body.context?.edges?.length || 0,
+    });
+
+    // Llamar al Doctor de Diseño
+    const review = await this.assistantService.reviewDesign(body.context);
+
+    // Convertir a formato AssistantResponse para el frontend
+    return {
+      message: review.summary,
+      tips: review.recommendations,
+      // NO incluimos suggestions aquí para que no se apliquen automáticamente
+      // El Doctor solo informa, no ejecuta
+    };
   }
 }

@@ -4,10 +4,19 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service';
+import type { RealtimeService } from '../diagram-realtime/realtime.service';
+import type { DiagramSnapshot } from '../diagram-realtime/realtime.service';
 
 @Injectable()
 export class DiagramsService {
+  private realtimeService?: RealtimeService;
+
   constructor(private prisma: PrismaService) {}
+
+  /** Inyectar el servicio de tiempo real (se hace en el módulo) */
+  setRealtimeService(service: RealtimeService) {
+    this.realtimeService = service;
+  }
 
   /** Verifica si el usuario puede ver/editar el proyecto */
   private async assertProjectAccess(userId: string, projectId: string) {
@@ -75,7 +84,14 @@ export class DiagramsService {
     payload: { nodes: any[]; edges: any[]; updatedAt?: string },
   ) {
     await this.assertCanEdit(userId, projectId);
-    return this.upsert(projectId, payload);
+    const result = await this.upsert(projectId, payload);
+    
+    // ✅ NOTIFICAR a todos los clientes conectados en tiempo real
+    if (this.realtimeService && result) {
+      this.realtimeService.broadcastSnapshotUpdate(projectId, result as DiagramSnapshot);
+    }
+    
+    return result;
   }
 
   private async assertCanEdit(userId: string, projectId: string) {

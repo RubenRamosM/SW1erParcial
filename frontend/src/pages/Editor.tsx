@@ -1,9 +1,11 @@
 // src/pages/Editor.tsx
-import React, { useEffect, useRef, useState, useMemo } from "react";
+import React, { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { Graph } from "@antv/x6";
 import { Selection } from "@antv/x6-plugin-selection";
 import { Toaster, toast } from "react-hot-toast";
+
+import { DagreLayout } from "@antv/layout";
 
 import { api } from "../lib/api";
 import { getAuthToken, applyAxiosAuthHeader } from "../lib/auth";
@@ -765,6 +767,9 @@ export default function Editor() {
   }
 
   const pendingResize = useRef<Set<string>>(new Set());
+  const pushSnapshotDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  const isUpdatingYDocRef = useRef(false);
+  
   function scheduleResize(nodeId: string) {
     if (pendingResize.current.has(nodeId)) return;
     pendingResize.current.add(nodeId);
@@ -921,25 +926,49 @@ export default function Editor() {
     }
   }
 
-  function pushSnapshotToYDoc() {
+  const pushSnapshotToYDoc = useCallback(() => {
     const graph = graphRef.current;
     const ydoc = ydocRef.current;
     if (!graph || !ydoc) return;
 
     const snap = toSnapshot(graph);
+    
+    // Evitar actualizaciones vacías o sin cambios
+    if (snap.nodes.length === 0 && snap.edges.length === 0) {
+      return;
+    }
+    
     const json = JSON.stringify({ nodes: snap.nodes, edges: snap.edges });
     const b64 = btoa(json);
     const version = Date.now();
 
-    // Actualizar el mapa "diagram" que el frontend usa para render
+    // Verificar si hay cambios reales comparando con la última versión
     const diagramMap = ydoc.getMap<any>("diagram");
+    const lastB64 = diagramMap.get("snapshotBase64");
+    
+    if (lastB64 === b64) {
+      // No hay cambios, no actualizar
+      return;
+    }
+
+    console.log("[Editor] pushSnapshotToYDoc - nodes:", snap.nodes.length, "edges:", snap.edges.length);
+
+    // Flag para indicar que estamos actualizando internamente
+    isUpdatingYDocRef.current = true;
+
+    // Actualizar el mapa "diagram" que el frontend usa para render
     Y.transact(ydoc, () => {
       diagramMap.set("snapshotBase64", b64);
       diagramMap.set("version", version);
     });
 
+    // Resetear flag después de que termine la transacción
+    setTimeout(() => {
+      isUpdatingYDocRef.current = false;
+    }, 50);
+
     lastEmittedVersionRef.current = version;
-  }
+  }, []);
 
   /* ===================== SOCKET + Y.Doc wiring ===================== */
   useEffect(() => {
@@ -988,8 +1017,60 @@ export default function Editor() {
       console.log("[Editor] joined", payload);
       if (payload?.role)
         setMyRole((prev) => promoteRole(prev, payload.role as UiRole));
+      
+      // Cargar el snapshot inicial desde el servidor
+      if (payload?.snapshot) {
+        const snap = payload.snapshot;
+        if (snap.nodes || snap.edges) {
+          console.log("[Editor] Cargando snapshot inicial desde servidor:", snap);
+          const graph = graphRef.current;
+          if (graph) {
+            graph.batchUpdate(() => {
+              fromSnapshot(graph, snap);
+              graph.getNodes().forEach((n: any) => {
+                if (n.shape === "uml-class") resizeUmlClass(n);
+              });
+              graph.getEdges().forEach((e: any) => {
+                e.setZIndex(1000);
+                e.toFront();
+                applyEdgeLabels(e);
+              });
+            });
+          }
+          // Sincronizar con Y.Doc después de cargar
+          requestAnimationFrame(() => pushSnapshotToYDoc());
+        }
+      }
+      
       if (!shareToken) refreshRole();
       tryRenderFromYDoc(); // Intentar pintar si ya hay doc del server
+    });
+
+    // ✅ Escuchar actualizaciones de snapshot desde otros usuarios
+    s.on("snapshot:update", (payload: any) => {
+      console.log("[Editor] 📥 snapshot:update recibido:", payload);
+      const snap = payload?.snapshot;
+      if (snap && (snap.nodes || snap.edges)) {
+        const graph = graphRef.current;
+        if (graph) {
+          graph.batchUpdate(() => {
+            // Limpiar el gráfico antes de aplicar el snapshot
+            graph.clearCells();
+            // Aplicar el nuevo snapshot
+            fromSnapshot(graph, snap);
+            graph.getNodes().forEach((n: any) => {
+              if (n.shape === "uml-class") resizeUmlClass(n);
+            });
+            graph.getEdges().forEach((e: any) => {
+              e.setZIndex(1000);
+              e.toFront();
+              applyEdgeLabels(e);
+            });
+          });
+          // Sincronizar con Y.Doc
+          requestAnimationFrame(() => pushSnapshotToYDoc());
+        }
+      }
     });
 
     // Eventos: del proyecto o a tu sala `user:<id>`
@@ -1042,11 +1123,19 @@ export default function Editor() {
 
     // YDoc local -> socket
     const onLocalYUpdate = (update: Uint8Array) => {
+      // Ignorar updates que se generen desde pushSnapshotToYDoc para evitar loops
+      if (isUpdatingYDocRef.current) {
+        console.log("[Editor] Ignoring Y.Doc update from pushSnapshotToYDoc (avoiding loop)");
+        return;
+      }
+      
+      console.log("[Editor] YDoc emitted local update, size:", update.length, "bytes");
       socketRef.current?.emit("y:sync:push", {
         projectId: pid,
         updateBase64: toBase64(update),
       });
     };
+    
     ydoc.on("update", onLocalYUpdate);
 
     // Awareness remoto -> UI (throttle)
@@ -1104,6 +1193,7 @@ export default function Editor() {
         s.off("y:sync", onYSync);
         s.off("y:update", onYUpdate);
         s.off("awareness:remote", onAwarenessRemote);
+        s.off("snapshot:update"); // ✅ Limpiar listener de snapshot
       } catch {}
       try {
         ydoc.off("update", onLocalYUpdate);
@@ -1195,18 +1285,61 @@ export default function Editor() {
         e.setZIndex(1000);
         e.toFront();
       });
+      // Sincronizar cambios de posición con Y.Doc para colaboración en tiempo real (con debounce)
+      if (pushSnapshotDebounceRef.current) {
+        clearTimeout(pushSnapshotDebounceRef.current);
+      }
+      pushSnapshotDebounceRef.current = setTimeout(() => {
+        pushSnapshotToYDoc();
+      }, 300);
     });
 
     const changeHandler = ({ node }: { node: any }) => {
-      if (node?.shape === "uml-class") scheduleResize(node.id);
+      if (node?.shape === "uml-class") {
+        scheduleResize(node.id);
+        // Sincronizar cambios con Y.Doc para colaboración en tiempo real (con debounce)
+        if (pushSnapshotDebounceRef.current) {
+          clearTimeout(pushSnapshotDebounceRef.current);
+        }
+        pushSnapshotDebounceRef.current = setTimeout(() => {
+          pushSnapshotToYDoc();
+        }, 300);
+      }
     };
     graph.on("node:change:attrs", changeHandler);
     graph.on("node:added", changeHandler);
     graph.on("node:change:size", changeHandler);
 
+    graph.on("edge:added", ({ edge }) => {
+      // Sincronizar cambios con Y.Doc cuando se agreguen edges (con debounce)
+      if (pushSnapshotDebounceRef.current) {
+        clearTimeout(pushSnapshotDebounceRef.current);
+      }
+      pushSnapshotDebounceRef.current = setTimeout(() => {
+        pushSnapshotToYDoc();
+      }, 300);
+    });
+
+    graph.on("edge:change:attrs", () => {
+      // Sincronizar cambios con Y.Doc cuando se modifiquen edges (con debounce)
+      if (pushSnapshotDebounceRef.current) {
+        clearTimeout(pushSnapshotDebounceRef.current);
+      }
+      pushSnapshotDebounceRef.current = setTimeout(() => {
+        pushSnapshotToYDoc();
+      }, 300);
+    });
+
     graph.on("cell:removed", ({ cell }) => {
       const idCell = (cell && (cell as any).id) || null;
       if (idCell) detachNodeObservers(idCell);
+      // Sincronizar cambios con Y.Doc cuando se eliminen celdas (con debounce)
+      if (pushSnapshotDebounceRef.current) {
+        clearTimeout(pushSnapshotDebounceRef.current);
+      }
+      pushSnapshotDebounceRef.current = setTimeout(() => {
+        pushSnapshotToYDoc();
+      }, 300);
     });
 
     const handleNodeClick = ({ node }: { node: any }) => {
@@ -1434,49 +1567,73 @@ export default function Editor() {
     return ["rounded", "smooth", "jumpover", "normal"].includes(type);
   }
 
-  // Autosave debounced (solo si puede editar)
-  useEffect(() => {
-    if (!graphRef.current || !canEdit) return;
-    let timer: any = null;
-    const schedule = () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(async () => {
-        try {
-          const snap = toSnapshot(graphRef.current!);
+  // Auto-layout logic
+  const applyAutoLayout = useCallback(() => {
+    if (!graphRef.current) {
+      toast.error("No hay diagrama para organizar.");
+      return;
+    }
+    const graph = graphRef.current;
+    if (graph.getNodes().length === 0) {
+      toast.success("No hay nodos para organizar.");
+      return;
+    }
 
-          // Publicar al Y.Doc para RT colaborativo
-          pushSnapshotToYDoc();
+    toast.loading("Organizando diagrama...", { id: "layout-toast" });
 
-          await api.put(`/projects/${pid}/diagram`, {
-            nodes: snap.nodes,
-            edges: snap.edges,
-            updatedAt: new Date().toISOString(),
-          });
-        } catch (e) {
-          console.error("Autosave falló", e);
+    // Preparar datos para DagreLayout
+    const model = graph.toJSON();
+    const layoutConfig = {
+      type: "dagre",
+      rankdir: "TB", // Top to Bottom
+      nodesep: 40,   // Espacio entre nodos
+      ranksep: 60,   // Espacio entre capas
+      controlPoints: true, // Puntos de control para aristas
+    };
+
+    const dagreLayout = new DagreLayout(layoutConfig);
+    const newModel = dagreLayout.layout(model);
+
+    graph.batchUpdate(() => {
+      // Actualizar posiciones de los nodos
+      newModel.nodes?.forEach((nodeData: any) => {
+        const node = graph.getCellById(nodeData.id);
+        if (node) {
+          node.position(nodeData.x, nodeData.y);
         }
-      }, 1200);
-    };
-    const g = graphRef.current;
-    const onDirty = () => schedule();
-    g.on("node:moved", onDirty);
-    g.on("node:change:attrs", onDirty);
-    g.on("node:change:size", onDirty);
-    g.on("node:added", onDirty);
-    g.on("cell:removed", onDirty);
-    g.on("edge:connected", onDirty);
-    g.on("edge:removed", onDirty);
-    return () => {
-      if (timer) clearTimeout(timer);
-      g.off("node:moved", onDirty);
-      g.off("node:change:attrs", onDirty);
-      g.off("node:change:size", onDirty);
-      g.off("node:added", onDirty);
-      g.off("cell:removed", onDirty);
-      g.off("edge:connected", onDirty);
-      g.off("edge:removed", onDirty);
-    };
-  }, [pid, graphReady, canEdit]);
+      });
+
+      // Asegurarse de que las aristas se vuelvan a enrutar
+      graph.getEdges().forEach((edge) => {
+        const sourceNode = graph.getCellById(edge.getSourceCellId()) as any;
+        const targetNode = graph.getCellById(edge.getTargetCellId()) as any;
+        if (sourceNode && targetNode) {
+          const sc = sourceNode.getBBox().center;
+          const tc = targetNode.getBBox().center;
+          const sourceSide = pickSide(sc, tc);
+          const targetSide = opposite(sourceSide);
+          const sourcePort = allocPortPreferMiddle(sourceNode.id, sourceSide);
+          const targetPort = allocPortPreferMiddle(targetNode.id, targetSide);
+
+          edge.setSource({ cell: sourceNode.id, port: sourcePort });
+          edge.setTarget({ cell: targetNode.id, port: targetPort });
+
+          // Usar el router guardado o por defecto si no existe
+          const data = edge.getData() || {};
+          const routerType: RouterType = isValidRouterType(data.routerType) ? data.routerType : "orth";
+          const connectorType: ConnectorType = isValidConnectorType(data.connectorType) ? data.connectorType : "rounded";
+
+          edge.setRouter(ROUTER_CONFIG[routerType]);
+          edge.setConnector(CONNECTOR_CONFIG[connectorType]);
+          applyEdgeLabels(edge);
+        }
+      });
+      graph.centerContent(); // Centrar el contenido después de organizar
+    });
+    toast.success("Diagrama organizado correctamente ✅", { id: "layout-toast" });
+    pushSnapshotToYDoc(); // Guardar el nuevo layout en el Y.Doc
+  }, [allocPortPreferMiddle, opposite, pickSide, isValidRouterType, isValidConnectorType, pushSnapshotToYDoc, ROUTER_CONFIG, CONNECTOR_CONFIG, applyEdgeLabels]);
+
 
   // Cargar snapshot + rol inicial (evitando /projects cuando hay shareToken)
   useEffect(() => {
@@ -2095,6 +2252,7 @@ export default function Editor() {
           tool={tool}
           onToolClick={onToolClick}
           onSave={canEdit ? save : undefined}
+          onAutoLayout={canEdit ? applyAutoLayout : undefined}
           disabled={toolbarDisabled}
           exportName={`diagram-${pid ?? "unsaved"}`}
           canShare={canShare}
