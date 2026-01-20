@@ -148,6 +148,50 @@ function colorFromId(id: string) {
   return `hsl(${h}, 70%, 50%)`;
 }
 
+/* ===================== Apply Association Class Styles ===================== */
+function applyAssociationClassStyles(graph: Graph) {
+  const nodes = graph.getNodes();
+  nodes.forEach((node: any) => {
+    const data = node.getData?.();
+    if (data?.isAssociationClass) {
+      // Aplicar estilos dorados a todos los selectores usando setAttr individual
+      // Body
+      node.setAttr("body/fill", "#FFFACD");
+      node.setAttr("body/stroke", "#D4AF37");
+      node.setAttr("body/strokeWidth", 2.5);
+      
+      // Name rect
+      node.setAttr("name-rect/fill", "#FFFACD");
+      node.setAttr("name-rect/stroke", "#D4AF37");
+      node.setAttr("name-rect/strokeWidth", 2.5);
+      
+      // Attrs rect
+      node.setAttr("attrs-rect/fill", "#FFFACD");
+      node.setAttr("attrs-rect/stroke", "#D4AF37");
+      node.setAttr("attrs-rect/strokeWidth", 2.5);
+      
+      // Methods rect
+      node.setAttr("methods-rect/fill", "#FFFACD");
+      node.setAttr("methods-rect/stroke", "#D4AF37");
+      node.setAttr("methods-rect/strokeWidth", 2.5);
+      
+      // Nombre (texto)
+      node.setAttr("name/fill", "#1e293b");
+    }
+  });
+
+  // También aplicar estilo dorado a relaciones de clase de asociación
+  const edges = graph.getEdges();
+  edges.forEach((edge: any) => {
+    const data = edge.getData?.();
+    if (data?.isAssociationRelation) {
+      edge.setAttr("line/stroke", "#D4AF37");
+      edge.setAttr("line/strokeWidth", 2);
+      edge.setAttr("line/strokeDasharray", undefined);
+    }
+  });
+}
+
 /* ===================== Auto-resize helpers ===================== */
 const MONO_FONT =
   "12px JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
@@ -907,6 +951,7 @@ export default function Editor() {
 
     graph.batchUpdate(() => {
       fromSnapshot(graph, payload);
+      applyAssociationClassStyles(graph);
 
       graph.getNodes().forEach((n: any) => {
         if (n.shape === "uml-class") resizeUmlClass(n);
@@ -1027,6 +1072,7 @@ export default function Editor() {
           if (graph) {
             graph.batchUpdate(() => {
               fromSnapshot(graph, snap);
+              applyAssociationClassStyles(graph);
               graph.getNodes().forEach((n: any) => {
                 if (n.shape === "uml-class") resizeUmlClass(n);
               });
@@ -1058,6 +1104,7 @@ export default function Editor() {
             graph.clearCells();
             // Aplicar el nuevo snapshot
             fromSnapshot(graph, snap);
+            applyAssociationClassStyles(graph);
             graph.getNodes().forEach((n: any) => {
               if (n.shape === "uml-class") resizeUmlClass(n);
             });
@@ -1667,6 +1714,7 @@ export default function Editor() {
 
         if (graphRef.current) {
           fromSnapshot(graphRef.current, snapshotPayload);
+          applyAssociationClassStyles(graphRef.current);
           graphRef.current.getNodes().forEach((n: any) => {
             if (n.shape === "uml-class")
               requestAnimationFrame(() => resizeUmlClass(n));
@@ -2009,7 +2057,8 @@ export default function Editor() {
   const handleAddClassFromAI = (
     className: string,
     attributes: string[],
-    methods: string[]
+    methods: string[],
+    isAssociationClass?: boolean  // ← Nuevo parámetro
   ) => {
     if (!graphRef.current) return;
 
@@ -2024,20 +2073,49 @@ export default function Editor() {
     const x = startX + col * spacing;
     const y = startY + row * spacing;
 
+    // Si es clase de asociación, aplicar estilo diferente (como en EA/StarUML)
+    const nodeAttrs: any = {
+      name: { text: className },
+      attrs: { text: attributes.join("\n") },
+      methods: { text: methods.join("\n") },
+    };
+
     const node = graphRef.current.addNode({
       shape: "uml-class",
       x,
       y,
       width: (CLASS_SIZES as any).WIDTH,
       height: (CLASS_SIZES as any).HEIGHT,
-      attrs: {
-        name: { text: className },
-        attrs: { text: attributes.join("\n") },
-        methods: { text: methods.join("\n") },
-      },
+      attrs: nodeAttrs,
       zIndex: 2,
-      data: { name: className, attributes, methods },
+      data: { 
+        name: className, 
+        attributes, 
+        methods,
+        isAssociationClass: isAssociationClass || false  // ← Guardar en data
+      },
     }) as any;
+
+    // ✨ Aplicar estilos dorados DESPUÉS de crear si es clase de asociación
+    if (isAssociationClass) {
+      node.setAttr("body/fill", "#FFFACD");
+      node.setAttr("body/stroke", "#D4AF37");
+      node.setAttr("body/strokeWidth", 2.5);
+      
+      node.setAttr("name-rect/fill", "#FFFACD");
+      node.setAttr("name-rect/stroke", "#D4AF37");
+      node.setAttr("name-rect/strokeWidth", 2.5);
+      
+      node.setAttr("attrs-rect/fill", "#FFFACD");
+      node.setAttr("attrs-rect/stroke", "#D4AF37");
+      node.setAttr("attrs-rect/strokeWidth", 2.5);
+      
+      node.setAttr("methods-rect/fill", "#FFFACD");
+      node.setAttr("methods-rect/stroke", "#D4AF37");
+      node.setAttr("methods-rect/strokeWidth", 2.5);
+      
+      node.setAttr("name/fill", "#1e293b");
+    }
 
     resizeUmlClass(node);
     pushSnapshotToYDoc();
@@ -2047,7 +2125,8 @@ export default function Editor() {
     from: string,
     to: string,
     type: string,
-    multiplicity?: { source?: string; target?: string }
+    multiplicity?: { source?: string; target?: string },
+    isAssociationRelation?: boolean  // ← Nuevo parámetro para relaciones de clase de asociación
   ) => {
     if (!graphRef.current) return;
 
@@ -2069,7 +2148,17 @@ export default function Editor() {
     };
 
     const edgeKind: EdgeKind = typeMapping[normalizedType] || "assoc";
-    const edgeStyle = EDGE_STYLE[edgeKind] || EDGE_STYLE.assoc;
+    let edgeStyle = { ...EDGE_STYLE[edgeKind] } || { ...EDGE_STYLE.assoc };
+
+    // Si es relación de clase de asociación, aplicar estilo especial (más visible)
+    if (isAssociationRelation) {
+      edgeStyle = {
+        ...edgeStyle,
+        stroke: "#D4AF37",  // Dorado como EA
+        strokeWidth: 2,
+        dashed: false,
+      };
+    }
 
     const sc = sourceNode.getBBox().center;
     const tc = targetNode.getBBox().center;
@@ -2087,6 +2176,23 @@ export default function Editor() {
           sourceMarker: edgeStyle.sourceMarker ?? null,
           targetMarker: edgeStyle.targetMarker ?? null,
         },
+        // Agregar etiquetas de multiplicidad si existen
+        ...(multiplicity?.source && {
+          sourceMultiplicity: {
+            text: multiplicity.source,
+            fill: "#111827",
+            fontSize: 11,
+            fontFamily: "monospace",
+          },
+        }),
+        ...(multiplicity?.target && {
+          targetMultiplicity: {
+            text: multiplicity.target,
+            fill: "#111827",
+            fontSize: 11,
+            fontFamily: "monospace",
+          },
+        }),
       },
       zIndex: 1000,
       router: ROUTER_CONFIG.orth,
@@ -2098,6 +2204,7 @@ export default function Editor() {
         multSource: multiplicity?.source || "",
         multTarget: multiplicity?.target || "",
         type: edgeKind,
+        isAssociationRelation: isAssociationRelation || false,  // ← Guardar en data
         routerType: "orth",
         connectorType: "rounded",
       },

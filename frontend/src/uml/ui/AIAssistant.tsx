@@ -680,8 +680,15 @@ export default function AIAssistant({
     if (type === "class" && onAddClass) {
       const attrs = (data.attributes || []).map((s: string) => s.trim());
       const methods = (data.methods || []).map((s: string) => s.trim());
-      onAddClass(data.name, attrs, methods);
-      if (!opts.silentToast) toast.success(`✅ Clase "${data.name}" creada`);
+      const isAssociationClass = data.isAssociationClass || false;  // ← Nuevo parámetro
+      onAddClass(data.name, attrs, methods, isAssociationClass);
+      
+      // Mensaje diferente si es clase de asociación
+      if (isAssociationClass) {
+        if (!opts.silentToast) toast.success(`✨ Clase de Asociación "${data.name}" creada`);
+      } else {
+        if (!opts.silentToast) toast.success(`✅ Clase "${data.name}" creada`);
+      }
 
       // sugerir siguiente paso
       setTimeout(() => {
@@ -708,7 +715,8 @@ export default function AIAssistant({
             target: data.multiplicity.target,
           }
         : undefined;
-      onAddRelation(data.from, data.to, relType, multiplicity);
+      const isAssociationRelation = data.isAssociationRelation || false;  // ← Nuevo parámetro
+      onAddRelation(data.from, data.to, relType, multiplicity, isAssociationRelation);
       if (!opts.silentToast)
         toast.success(`✅ Relación ${data.from} → ${data.to} creada`);
     }
