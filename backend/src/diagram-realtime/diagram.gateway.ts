@@ -8,7 +8,7 @@ import {
   OnGatewayInit,
 } from '@nestjs/websockets';
 import type { Server, Namespace, Socket } from 'socket.io';
-import { Inject } from '@nestjs/common';
+import { Inject, Logger } from '@nestjs/common';
 import { ShareService } from '../share/share.service';
 import { PrismaService } from '../common/prisma.service';
 import { RealtimeService } from './realtime.service';
@@ -48,6 +48,7 @@ type Snapshot = { nodes: any[]; edges: any[] };
 })
 export class DiagramGateway implements OnGatewayInit {
   @WebSocketServer() server!: Namespace;
+  private readonly logger = new Logger(DiagramGateway.name);
 
   constructor(
     @Inject('REDIS_PUB') private pub: Redis,
@@ -59,15 +60,23 @@ export class DiagramGateway implements OnGatewayInit {
   ) {}
 
   afterInit(server: Server | Namespace) {
-    const io: any = (server as any).server ?? (server as any);
-    const waitReady = (r: any) =>
-      r.status === 'ready'
-        ? Promise.resolve()
-        : new Promise<void>((res) => r.once('ready', () => res()));
-    Promise.all([waitReady(this.pub), waitReady(this.sub)]).then(() => {
-      io.adapter(createAdapter(this.pub, this.sub));
-      console.log('[Socket.IO] Redis adapter attached');
-    });
+    try {
+      const io: any = (server as any).server ?? (server as any);
+      const waitReady = (r: any) =>
+        r.status === 'ready'
+          ? Promise.resolve()
+          : new Promise<void>((res) => r.once('ready', () => res()));
+      Promise.all([waitReady(this.pub), waitReady(this.sub)])
+        .then(() => {
+          io.adapter(createAdapter(this.pub, this.sub));
+          this.logger.log('Redis adapter attached successfully');
+        })
+        .catch((error) => {
+          this.logger.error('Error attaching Redis adapter:', error instanceof Error ? error.message : String(error));
+        });
+    } catch (error) {
+      this.logger.error('Error in afterInit:', error instanceof Error ? error.message : String(error));
+    }
   }
 
   /**
@@ -75,8 +84,17 @@ export class DiagramGateway implements OnGatewayInit {
    * Usado cuando el snapshot se actualiza fuera de WebSocket (ej: PUT HTTP)
    */
   emitSnapshotUpdate(projectId: string, snapshot: any) {
-    console.log('[DiagramGateway] 📡 Emitting snapshot update to room', projectId);
-    this.server.to(projectId).emit('snapshot:update', { snapshot, projectId });
+    try {
+      if (!projectId || !snapshot) {
+        this.logger.warn('Invalid parameters for emitSnapshotUpdate');
+        return;
+      }
+
+      this.logger.debug(`Emitting snapshot update to room ${projectId}`);
+      this.server.to(projectId).emit('snapshot:update', { snapshot, projectId });
+    } catch (error) {
+      this.logger.error('Error emitting snapshot update:', error instanceof Error ? error.message : String(error));
+    }
   }
 
   private async parseUserIdFromToken(token?: string): Promise<string | null> {
@@ -355,6 +373,15 @@ export class DiagramGateway implements OnGatewayInit {
       userId,
     );
 
+    // ✅ Enviar el snapshot hidratado al usuario aprobado
+    const hydrated = await this.hydrateRoomSnapshotFromDB(projectId);
+    this.server.to(`user:${userId}`).emit('editApprovedWithSnapshot', {
+      projectId,
+      snapshot: hydrated,
+      role: role === 'EDITOR' ? 'EDITOR' : 'VIEWER',
+    });
+
+    // ✅ Notificar a toda la room sobre el cambio de permisos
     this.server.to(projectId).emit('memberUpdated', {
       projectId,
       userId,

@@ -1129,6 +1129,34 @@ export default function Editor() {
       handleMemberUpdated(p, "permissionsUpdated")
     );
 
+    // ✅ Nuevo evento: cuando se aprueba la edición, recibir el snapshot
+    s.on("editApprovedWithSnapshot", (payload: any) => {
+      console.log("[Editor] editApprovedWithSnapshot received:", payload);
+      if (payload?.projectId !== pid) return;
+      if (!user?.id || payload.userId !== user.id) return;
+      
+      const snap = payload?.snapshot;
+      if (snap && (snap.nodes || snap.edges)) {
+        const graph = graphRef.current;
+        if (graph) {
+          graph.batchUpdate(() => {
+            fromSnapshot(graph, snap);
+            applyAssociationClassStyles(graph);
+            graph.getNodes().forEach((n: any) => {
+              if (n.shape === "uml-class") resizeUmlClass(n);
+            });
+            graph.getEdges().forEach((e: any) => {
+              e.setZIndex(1000);
+              e.toFront();
+              applyEdgeLabels(e);
+            });
+          });
+          // Sincronizar con Y.Doc
+          requestAnimationFrame(() => pushSnapshotToYDoc());
+        }
+      }
+    });
+
     s.on("editDenied", (p: any) => {
       const reason =
         p?.reason === "login_required"
